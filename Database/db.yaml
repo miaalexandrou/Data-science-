@@ -10,7 +10,7 @@ services:
       MYSQL_USER: DataScience_user
       MYSQL_PASSWORD: DataScience_pass_2025
     ports:
-      - "3307:3306"
+      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:

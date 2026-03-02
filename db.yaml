@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  mysql_db:
+    image: mariadb:10.2.32
+    container_name: thesis-mysql-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: thesis_root_2025
+      MYSQL_DATABASE: thesis_data
+      MYSQL_USER: thesis_user
+      MYSQL_PASSWORD: thesis_pass_2025
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pthesis_root_2025"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql_data:

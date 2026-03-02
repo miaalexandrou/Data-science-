@@ -64,24 +64,27 @@ def main():
     print("  2. First 5 pages")
     print("  3. First 10 pages")
     print("  4. All available pages")
+    print("  5. First 5 listings (testing)")
     
     while True:
         try:
-            page_choice = input("\nEnter your choice (1-4): ").strip()
+            page_choice = input("\nEnter your choice (1-5): ").strip()
             
             page_map = {
-                '1': 1,
-                '2': 5,
-                '3': 10,
-                '4': 999
+                '1': (1, None),      # 1 page, no limit
+                '2': (5, None),      # 5 pages, no limit
+                '3': (10, None),     # 10 pages, no limit
+                '4': (999, None),    # all pages, no limit
+                '5': (1, 5)          # 1 page, limit to 5 listings
             }
             
             if page_choice not in page_map:
-                print("Invalid choice. Please enter 1-4.")
+                print("Invalid choice. Please enter 1-5.")
                 continue
             
-            max_pages = page_map[page_choice]
-            page_label = ['First page', 'First 5 pages', 'First 10 pages', 'All pages'][int(page_choice) - 1]
+            max_pages, max_listings = page_map[page_choice]
+            labels = ['First page only', 'First 5 pages', 'First 10 pages', 'All pages', 'First 5 listings (testing)']
+            page_label = labels[int(page_choice) - 1]
             break
         except ValueError:
             print("Invalid input. Please enter a number 1-4.")
@@ -100,19 +103,23 @@ def main():
             print(f"Scraping {city.upper()}")
             print(f"{'='*60}")
             
-            properties = scraper.get_property_listings(city=city, max_pages=max_pages)
+            properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings)
             all_properties.extend(properties)
             
             # Minimal delay between cities
             time.sleep(0.05)
         
         # Save results
-        scraper.save_to_json(all_properties, '../../data/raw/bazaraki_properties.json')
+        import os
+        output_dir = 'data/raw'
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, 'bazaraki_properties.json')
+        scraper.save_to_json(all_properties, output_file)
         
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
         print(f"Total properties collected: {len(all_properties)}")
-        print(f"Saved to: ../../data/raw/bazaraki_properties.json")
+        print(f"Saved to: {output_file}")
         print(f"{'='*60}")
     except Exception as e:
         print(f"Error during scraping: {e}")
@@ -140,7 +147,7 @@ class BazarakiScraper:
             'paphos': 'pafou-district-paphos'
         }
     
-    def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999) -> List[Dict]:
+    def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999, max_listings: int = None) -> List[Dict]:
         """Fetch property listings from Bazaraki using Selenium"""
         properties = []
         
@@ -172,12 +179,16 @@ class BazarakiScraper:
                 
                 soup = BeautifulSoup(self.driver.page_source, 'html.parser')
                 
-                # Find property listings - look for CardGrid containers (CSS modules)
+                # Find property listings - look for CardGrid containers  
                 listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
                 
                 if not listings:
-                    # Try alternative: find all divs with CardGrid classes
-                    listings = soup.find_all('div', class_=lambda x: x and 'CardGrid' in x and 'container' in x.lower())
+                    # Try Features_item selector
+                    listings = soup.find_all(class_=lambda x: x and 'Features_item' in x)
+                
+                if not listings:
+                    # Try advert-grid containers
+                    listings = soup.find_all(class_=lambda x: x and 'advert-grid__item' in x)
                 
                 if not listings:
                     print(f"No listings found on page {page}. Stopping...")
@@ -186,9 +197,17 @@ class BazarakiScraper:
                 print(f"Found {len(listings)} listings on page {page}")
                 
                 for listing in listings:
+                    # Stop if we've reached max_listings
+                    if max_listings and len(properties) >= max_listings:
+                        break
+                    
                     property_data = self._parse_listing(listing)
                     if property_data:
                         properties.append(property_data)
+                
+                # Stop if we've reached max_listings
+                if max_listings and len(properties) >= max_listings:
+                    break
                 
                 # No delay between pages
                 time.sleep(0.05)
@@ -252,8 +271,17 @@ class BazarakiScraper:
                 return None
             
             title = title_elem.get_text(strip=True)
-            title_link = title_elem.find_parent('a')
-            property_url = title_link.get('href', '') if title_link else ''
+            
+            # Extract URL - find the /adv/ link in the listing
+            property_url = ''
+            for link in listing.find_all('a', href=True):
+                href = link.get('href', '')
+                if '/adv/' in href:
+                    property_url = href
+                    break
+            
+            if not property_url:
+                return None
             
             # Extract price
             price_elem = listing.find(class_=lambda x: x and 'CardGrid_price' in x)
@@ -263,45 +291,53 @@ class BazarakiScraper:
             # Extract location info from text content
             all_text = listing.get_text(strip=True)
             
-            # Find property details
+            # Extract bedrooms from title
             bedrooms = None
-            bathrooms = None
-            size_sqm = None
-            
-            # Look for bedroom patterns
-            if '4-bedroom' in all_text or '4 bed' in all_text.lower():
-                bedrooms = 4
-            elif '3-bedroom' in all_text or '3 bed' in all_text.lower():
-                bedrooms = 3
-            elif '2-bedroom' in all_text or '2 bed' in all_text.lower():
-                bedrooms = 2
-            elif '5-bedroom' in all_text or '5 bed' in all_text.lower():
-                bedrooms = 5
-            
-            # Look for size in m²
-            size_match = re.search(r'(\d+)\s*m²', all_text)
-            if size_match:
-                size_sqm = int(size_match.group(1))
+            bed_match = re.search(r'(\d+)-?bedroom', all_text, re.IGNORECASE)
+            if bed_match:
+                bedrooms = int(bed_match.group(1))
             
             property_id = self._extract_id_from_url(property_url)
             
             # Extract location from the text
             location_parts = all_text.split('—')
-            city = 'Nicosia'
             area = location_parts[-1].strip() if len(location_parts) > 1 else ''
+            
+            # Build full URL
+            full_url = f"{self.base_url}{property_url}"
+            
+            # Fetch all details from property detail page
+            print(f"  Fetching details: {property_id}...")
+            detail_data = self._fetch_property_details(full_url)
+            
+            # Use detail data for everything
+            d = detail_data if detail_data else {}
             
             property_data = {
                 'source': 'bazaraki',
+                'reference_number': d.get('reference_number', property_id),
                 'external_id': property_id,
-                'url': property_url if property_url.startswith('http') else f"{self.base_url}{property_url}",
+                'url': full_url,
                 'title': title,
                 'price': price,
-                'city': city,
-                'district': '',
-                'area': area,
-                'bedrooms': bedrooms,
-                'bathrooms': bathrooms,
-                'size_sqm': size_sqm,
+                'city': d.get('city', 'Nicosia'),
+                'district': d.get('district', ''),
+                'area': d.get('area', area),
+                'bedrooms': d.get('bedrooms', bedrooms),
+                'bathrooms': d.get('bathrooms'),
+                'property_area_sqm': d.get('property_area_sqm'),
+                'plot_area_sqm': d.get('plot_area_sqm'),
+                'property_type': d.get('property_type'),
+                'parking': d.get('parking'),
+                'condition': d.get('condition'),
+                'furnishing': d.get('furnishing'),
+                'included': d.get('included'),
+                'postal_code': d.get('postal_code'),
+                'construction_year': d.get('construction_year'),
+                'online_viewing': d.get('online_viewing'),
+                'air_conditioning': d.get('air_conditioning'),
+                'energy_efficiency': d.get('energy_efficiency'),
+                'price_per_sqm': d.get('price_per_sqm'),
                 'scraped_date': datetime.now().isoformat(),
             }
             
@@ -311,15 +347,156 @@ class BazarakiScraper:
             print(f"Error parsing listing: {e}")
             return None
     
+    def _fetch_property_details(self, property_url: str) -> Optional[Dict]:
+        """Fetch detailed information from individual property page"""
+        try:
+            self.driver.get(property_url)
+            time.sleep(1.0)
+            
+            # Click "Show more features" button using JavaScript (more reliable than .click())
+            try:
+                show_more_buttons = self.driver.find_elements(By.CSS_SELECTOR, '[class*="Features_show-more"]')
+                for btn in show_more_buttons:
+                    try:
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Also try clicking any "Show more" text links
+            try:
+                show_more_links = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Show more')]")
+                for link in show_more_links:
+                    try:
+                        self.driver.execute_script("arguments[0].click();", link)
+                        time.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Re-parse after clicking show more
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            detail_data = {}
+            
+            # Extract location from detail page
+            for div in soup.find_all(class_=lambda x: x and 'Detail_block' in x):
+                text = div.get_text(strip=True)
+                if text.startswith('Location:'):
+                    loc = text.replace('Location:', '').strip()
+                    # Format: "Nicosia — Strovolos - Chryseleousa"
+                    parts = loc.split('—')
+                    if len(parts) >= 1:
+                        detail_data['city'] = parts[0].strip()
+                    if len(parts) >= 2:
+                        sub_parts = parts[1].strip().split(' - ')
+                        detail_data['district'] = sub_parts[0].strip() if sub_parts else ''
+                        detail_data['area'] = sub_parts[-1].strip() if len(sub_parts) > 1 else ''
+                    break
+            
+            # Extract price per sqm from header
+            price_text = soup.get_text()
+            price_sqm_match = re.search(r'€([\d,.]+)/m²', price_text)
+            if price_sqm_match:
+                detail_data['price_per_sqm'] = price_sqm_match.group(1).replace(',', '')
+            
+            # Parse all Features_item divs — these are the key-value property details
+            feature_items = soup.find_all(class_=lambda x: x and 'Features_item' in x and 'show-more' not in x)
+            
+            # Map of label → key name
+            field_map = {
+                'Reference number': 'reference_number',
+                'Property area': 'property_area_sqm',
+                'Type': 'property_type',
+                'Parking': 'parking',
+                'Condition': 'condition',
+                'Plot area': 'plot_area_sqm',
+                'Furnishing': 'furnishing',
+                'Included': 'included',
+                'Postal code': 'postal_code',
+                'Construction year': 'construction_year',
+                'Online viewing': 'online_viewing',
+                'Air conditioning': 'air_conditioning',
+                'Energy Efficiency': 'energy_efficiency',
+                'Bedrooms': 'bedrooms',
+                'Bathrooms': 'bathrooms',
+                'Square meter price': 'price_per_sqm',
+            }
+            
+            for item in feature_items:
+                item_text = item.get_text(strip=True)
+                
+                for label, key in field_map.items():
+                    if item_text.startswith(label):
+                        value = item_text[len(label):].strip()
+                        
+                        # Parse numeric fields
+                        if key in ('property_area_sqm', 'plot_area_sqm'):
+                            m = re.search(r'(\d+)', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key in ('bedrooms', 'bathrooms'):
+                            m = re.search(r'(\d+)', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key == 'construction_year':
+                            m = re.search(r'(\d{4})', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key == 'price_per_sqm':
+                            m = re.search(r'[\d,.]+', value)
+                            if m:
+                                detail_data[key] = m.group(0).replace(',', '')
+                        else:
+                            detail_data[key] = value
+                        break
+            
+            return detail_data if detail_data else None
+            
+        except Exception as e:
+            print(f"  Error fetching details: {e}")
+            return None
+    
+    
     def _extract_id_from_url(self, url: str) -> str:
-        """Extract property ID from URL"""
+        """Extract property ID from URL like /adv/5755577_4-bedroom-..."""
+        match = re.search(r'/adv/(\d+)', url)
+        if match:
+            return match.group(1)
         match = re.search(r'/(\d+)/?$', url)
         return match.group(1) if match else url
     
     def _extract_price(self, price_text: str) -> Optional[float]:
-        """Extract numeric price from text"""
+        """Extract numeric price from text. Handles European format (€365.000 = 365000)"""
+        # Remove currency symbols, spaces, etc.
         price_text = re.sub(r'[^\d,.]', '', price_text)
-        price_text = price_text.replace(',', '')
+        
+        if not price_text:
+            return None
+        
+        # Detect European format: dots as thousands separators
+        # E.g. "365.000" or "1.250.000" — dots separate groups of 3 digits
+        # vs decimal: "365.50" — dot followed by 1-2 digits at end
+        if re.match(r'^\d{1,3}(\.\d{3})+$', price_text):
+            # European thousands format: 365.000 → 365000, 1.250.000 → 1250000
+            price_text = price_text.replace('.', '')
+        elif ',' in price_text and '.' in price_text:
+            # Mixed format like 1,250.00 or 1.250,00
+            if price_text.index(',') < price_text.index('.'):
+                # 1,250.00 — comma is thousands
+                price_text = price_text.replace(',', '')
+            else:
+                # 1.250,00 — dot is thousands, comma is decimal
+                price_text = price_text.replace('.', '').replace(',', '.')
+        elif ',' in price_text:
+            # Could be 365,000 (thousands) or 365,50 (decimal)
+            if re.match(r'^\d{1,3}(,\d{3})+$', price_text):
+                price_text = price_text.replace(',', '')
+            else:
+                price_text = price_text.replace(',', '.')
+        
         try:
             return float(price_text)
         except ValueError:

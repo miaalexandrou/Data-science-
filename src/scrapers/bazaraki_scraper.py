@@ -15,10 +15,16 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 import time
 import json
+import sys
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import re
 import random
+
+# Allow imports from the src/ root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.database.db_connection import DBConnection
 
 
 # ==================== MAIN FUNCTION ====================
@@ -109,17 +115,22 @@ def main():
             # Minimal delay between cities
             time.sleep(0.05)
         
-        # Save results
-        import os
+        # ── Save to database ──────────────────────────────────────
+        print(f"\nSaving {len(all_properties)} properties to database...")
+        with DBConnection() as db:
+            inserted = db.insert_properties(all_properties)
+
+        # ── Save JSON backup ─────────────────────────────────────────
         output_dir = 'data/raw'
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, 'bazaraki_properties.json')
         scraper.save_to_json(all_properties, output_file)
-        
+
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
-        print(f"Total properties collected: {len(all_properties)}")
-        print(f"Saved to: {output_file}")
+        print(f"Total properties collected : {len(all_properties)}")
+        print(f"New rows inserted to DB    : {inserted}")
+        print(f"JSON backup saved to       : {output_file}")
         print(f"{'='*60}")
     except Exception as e:
         print(f"Error during scraping: {e}")

@@ -213,11 +213,6 @@ __marimo__/
 .env
 .env.local
 
-# Data files
-data/raw/*.json
-data/raw/*.csv
-data/processed/*.json
-data/processed/*.csv
 
 # Database files
 *.db

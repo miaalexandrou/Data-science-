@@ -107,12 +107,12 @@ def main():
             time.sleep(0.05)
         
         # Save results
-        scraper.save_to_json(all_properties, 'data/raw/bazaraki_properties.json')
+        scraper.save_to_json(all_properties, '../../data/raw/bazaraki_properties.json')
         
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
         print(f"Total properties collected: {len(all_properties)}")
-        print(f"Saved to: data/raw/bazaraki_properties.json")
+        print(f"Saved to: ../../data/raw/bazaraki_properties.json")
         print(f"{'='*60}")
     except Exception as e:
         print(f"Error during scraping: {e}")

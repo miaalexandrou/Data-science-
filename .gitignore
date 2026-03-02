@@ -77,6 +77,8 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+# Ignore Jupyter Notebook files
+15_4_house_price_prediction.ipynb
 
 # IPython
 profile_default/

@@ -112,8 +112,10 @@ def main():
             properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings)
             all_properties.extend(properties)
             
-            # Minimal delay between cities
-            time.sleep(0.05)
+            # Human-like pause between cities
+            city_pause = random.uniform(10, 20)
+            print(f"Pausing {city_pause:.1f}s before next city...")
+            time.sleep(city_pause)
         
         # ── Save to database ──────────────────────────────────────
         print(f"\nSaving {len(all_properties)} properties to database...")
@@ -177,16 +179,19 @@ class BazarakiScraper:
             try:
                 self.driver.get(page_url)
                 
-                # Ultra-fast minimal wait
-                time.sleep(0.3)
+                # Human-like wait for page to load
+                time.sleep(random.uniform(2.5, 5.0))
                 
-                # Try to wait for listings with very minimal timeout
+                # Try to wait for listings
                 try:
-                    WebDriverWait(self.driver, 2).until(
+                    WebDriverWait(self.driver, 10).until(
                         EC.presence_of_all_elements_located((By.CLASS_NAME, "CardGrid_container"))
                     )
                 except:
                     pass
+                
+                # Simulate human scrolling down the page
+                self._human_scroll()
                 
                 soup = BeautifulSoup(self.driver.page_source, 'html.parser')
                 
@@ -220,8 +225,10 @@ class BazarakiScraper:
                 if max_listings and len(properties) >= max_listings:
                     break
                 
-                # No delay between pages
-                time.sleep(0.05)
+                # Human-like pause between pages
+                page_pause = random.uniform(4, 9)
+                print(f"  Pausing {page_pause:.1f}s before next page...")
+                time.sleep(page_pause)
                 
             except Exception as e:
                 print(f"Error fetching page {page}: {e}")
@@ -239,10 +246,11 @@ class BazarakiScraper:
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-web-resources")
             chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--disable-images")  # Skip images
-            chrome_options.add_argument("--blink-settings=imagesEnabled=false")
+            # Randomise window size to a common desktop resolution
+            width  = random.choice([1280, 1366, 1440, 1536, 1920])
+            height = random.choice([768, 800, 900, 1080])
+            chrome_options.add_argument(f"--window-size={width},{height}")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             
@@ -254,16 +262,40 @@ class BazarakiScraper:
                     user_agent=ua.random,
                     languages=["en-US", "en"],
                     vendor="Google Inc.",
-                    platform="Win32",
+                    platform="MacIntel",
                     webgl_vendor="Intel Inc.",
                     renderer="Intel Iris OpenGL Engine",
-                    fix_hairline=False)
+                    fix_hairline=True)
             
-            print("WebDriver ready (images disabled)")
+            # Warm-up: visit the homepage first so later requests look like
+            # natural in-site navigation rather than direct bot hits
+            print("Warming up — visiting homepage...")
+            self.driver.get(self.base_url)
+            time.sleep(random.uniform(3, 6))
+            self._human_scroll()
+            
+            print("WebDriver ready")
         except Exception as e:
             print(f"Error initializing WebDriver: {e}")
             raise
     
+    def _human_scroll(self):
+        """Simulate a human slowly scrolling down then back up a page"""
+        try:
+            total_height = self.driver.execute_script("return document.body.scrollHeight")
+            viewport    = self.driver.execute_script("return window.innerHeight")
+            steps       = random.randint(3, 7)
+            step_size   = total_height // (steps + 1)
+            for i in range(1, steps + 1):
+                scroll_to = min(step_size * i, total_height - viewport)
+                self.driver.execute_script(f"window.scrollTo(0, {scroll_to});")
+                time.sleep(random.uniform(0.3, 0.9))
+            # Small scroll back up — humans rarely stay at the bottom
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(random.uniform(0.2, 0.5))
+        except Exception:
+            pass
+
     def close_driver(self):
         """Safely close the WebDriver"""
         if self.driver:
@@ -362,7 +394,8 @@ class BazarakiScraper:
         """Fetch detailed information from individual property page"""
         try:
             self.driver.get(property_url)
-            time.sleep(1.0)
+            time.sleep(random.uniform(2, 5))
+            self._human_scroll()
             
             # Click "Show more features" button using JavaScript (more reliable than .click())
             try:

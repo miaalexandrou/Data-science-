@@ -1,4 +1,4 @@
-# Cyprus Real Estate - Best Value Search Engine 🏠
+# Cyprus Real Estate - Best Value Search Engine  🏠
 
 **CSE 473/525 Data Science Group Project - Phase A**  
 **Team DataVision**  

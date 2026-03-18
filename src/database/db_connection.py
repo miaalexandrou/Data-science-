@@ -6,6 +6,7 @@ that match Database/db.yaml.
 """
 
 import os
+import json
 import pymysql
 import pymysql.cursors
 from typing import Dict, List, Optional
@@ -104,7 +105,6 @@ class DBConnection:
     def insert_property(self, property_data: Dict) -> bool:
         """
         Insert a single property record.
-        Silently skips duplicates (same source + external_id).
 
         Returns True if a new row was inserted, False if it was a duplicate.
         """
@@ -112,7 +112,7 @@ class DBConnection:
             raise RuntimeError("[DB] Not connected. Call connect() first.")
 
         sql = """
-            INSERT IGNORE INTO properties (
+            INSERT INTO properties (
                 source, reference_number, external_id, url, title, price,
                 city, district, area,
                 bedrooms, bathrooms,
@@ -133,8 +133,17 @@ class DBConnection:
                 %(price_per_sqm)s, %(description)s, %(scraped_date)s
             )
         """
-        # Normalise key name used in scraper
+        # Normalize data
         row = dict(property_data)
+        
+        # Remove must_haves if present
+        row.pop("must_haves", None)
+        
+        # Convert list fields to JSON strings
+        if isinstance(row.get("included"), list):
+            row["included"] = json.dumps(row["included"], ensure_ascii=False) if row["included"] else None
+        
+        # Handle condition field
         row.setdefault("condition", row.pop("condition", None))
 
         try:

@@ -120,7 +120,7 @@ class DBConnection:
                 property_type, parking, `condition`, furnishing,
                 included, postal_code, construction_year,
                 online_viewing, air_conditioning, energy_efficiency,
-                price_per_sqm, scraped_date
+                price_per_sqm, description, scraped_date
             ) VALUES (
                 %(source)s, %(reference_number)s, %(external_id)s,
                 %(url)s, %(title)s, %(price)s,
@@ -130,7 +130,7 @@ class DBConnection:
                 %(property_type)s, %(parking)s, %(condition)s, %(furnishing)s,
                 %(included)s, %(postal_code)s, %(construction_year)s,
                 %(online_viewing)s, %(air_conditioning)s, %(energy_efficiency)s,
-                %(price_per_sqm)s, %(scraped_date)s
+                %(price_per_sqm)s, %(description)s, %(scraped_date)s
             )
         """
         # Normalise key name used in scraper

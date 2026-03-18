@@ -36,85 +36,36 @@ from database.db_connection import DBConnection
 
 def main():
     """Main execution function with user input for locations"""
-    
-    # Available cities
     available_cities = ['nicosia', 'limassol', 'larnaka', 'paphos']
-    
+
     print("=" * 60)
     print("BAZARAKI PROPERTY SCRAPER")
     print("=" * 60)
-    print("\nAvailable locations:")
-    for i, city in enumerate(available_cities, 1):
-        print(f"  {i}. {city.capitalize()}")
-    print(f"  {len(available_cities) + 1}. All locations")
-    
-    # Get user input
-    while True:
-        try:
-            choice = input("\nEnter location(s) to scrape (comma-separated numbers, e.g., 1,3,4): ").strip()
-            
-            if choice == str(len(available_cities) + 1):
-                selected_cities = available_cities
-            else:
-                choices = [int(c.strip()) - 1 for c in choice.split(',')]
-                selected_cities = [available_cities[i] for i in choices if 0 <= i < len(available_cities)]
-            
-            if not selected_cities:
-                print("Invalid selection. Please try again.")
-                continue
-            
-            break
-        except (ValueError, IndexError):
-            print("Invalid input. Please enter valid numbers.")
-    
+
+    selected_cities = _prompt_selected_cities(available_cities)
     print(f"\nSelected cities: {', '.join([c.capitalize() for c in selected_cities])}")
-    
-    # Get number of pages to scrape
-    print("\nHow many pages to scrape per city?")
-    print("  1. First page only")
-    print("  2. First 5 pages")
-    print("  3. First 10 pages")
-    print("  4. All available pages")
-    print("  5. First 5 listings (testing)")
-    
-    while True:
-        try:
-            page_choice = input("\nEnter your choice (1-5): ").strip()
-            
-            page_map = {
-                '1': (1, None),      # 1 page, no limit
-                '2': (5, None),      # 5 pages, no limit
-                '3': (10, None),     # 10 pages, no limit
-                '4': (999, None),    # all pages, no limit
-                '5': (1, 5)          # 1 page, limit to 5 listings
-            }
-            
-            if page_choice not in page_map:
-                print("Invalid choice. Please enter 1-5.")
-                continue
-            
-            max_pages, max_listings = page_map[page_choice]
-            labels = ['First page only', 'First 5 pages', 'First 10 pages', 'All pages', 'First 5 listings (testing)']
-            page_label = labels[int(page_choice) - 1]
-            break
-        except ValueError:
-            print("Invalid input. Please enter a number 1-4.")
+
+    max_pages, max_listings, page_label = _prompt_page_settings()
     
     print(f"Will scrape: {page_label} per city")
     print("\nStarting scrape...\n")
     
-    # Initialize scraper
+    # Initialize scraper and database connection
     scraper = BazarakiScraper()
+    db = DBConnection()
     all_properties = []
     
     try:
+        # Open database connection for uploading during scraping
+        db.connect()
+        
         # Scrape selected cities
         for city in selected_cities:
             print(f"\n{'='*60}")
             print(f"Scraping {city.upper()}")
             print(f"{'='*60}")
             
-            properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings)
+            properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings, db_connection=db)
             all_properties.extend(properties)
             
             # Minimal delay between cities
@@ -125,17 +76,6 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, 'bazaraki_properties.json')
         scraper.save_to_json(all_properties, output_file)
-
-        # Upload to database
-        if all_properties:
-            try:
-                with DBConnection() as db:
-                    inserted = db.insert_properties(all_properties)
-                print(f"Uploaded to DB: {inserted} new row(s) inserted")
-            except Exception as db_error:
-                print(f"Database upload failed: {db_error}")
-        else:
-            print("No properties scraped; skipping database upload.")
         
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
@@ -145,8 +85,62 @@ def main():
     except Exception as e:
         print(f"Error during scraping: {e}")
     finally:
-        # Clean up driver
+        # Clean up: close database connection and driver
+        db.disconnect()
         scraper.close_driver()
+
+
+def _prompt_selected_cities(available_cities: List[str]) -> List[str]:
+    print("\nAvailable locations:")
+    for i, city in enumerate(available_cities, 1):
+        print(f"  {i}. {city.capitalize()}")
+    print(f"  {len(available_cities) + 1}. All locations")
+
+    while True:
+        try:
+            choice = input("\nEnter location(s) to scrape (comma-separated numbers, e.g., 1,3,4): ").strip()
+
+            if choice == str(len(available_cities) + 1):
+                selected_cities = available_cities
+            else:
+                choices = [int(c.strip()) - 1 for c in choice.split(',')]
+                selected_cities = [available_cities[i] for i in choices if 0 <= i < len(available_cities)]
+
+            if not selected_cities:
+                print("Invalid selection. Please try again.")
+                continue
+
+            return selected_cities
+        except (ValueError, IndexError):
+            print("Invalid input. Please enter valid numbers.")
+
+
+def _prompt_page_settings() -> tuple[int, Optional[int], str]:
+    print("\nHow many pages to scrape per city?")
+    print("  1. First page only")
+    print("  2. First 5 pages")
+    print("  3. First 10 pages")
+    print("  4. All available pages")
+    print("  5. First 5 listings (testing)")
+
+    page_map = {
+        '1': (1, None),      # 1 page, no limit
+        '2': (5, None),      # 5 pages, no limit
+        '3': (10, None),     # 10 pages, no limit
+        '4': (999, None),    # all pages, no limit
+        '5': (1, 5)          # 1 page, limit to 5 listings
+    }
+    labels = ['First page only', 'First 5 pages', 'First 10 pages', 'All pages', 'First 5 listings (testing)']
+
+    while True:
+        page_choice = input("\nEnter your choice (1-5): ").strip()
+        if page_choice not in page_map:
+            print("Invalid choice. Please enter 1-5.")
+            continue
+
+        max_pages, max_listings = page_map[page_choice]
+        page_label = labels[int(page_choice) - 1]
+        return max_pages, max_listings, page_label
 
 
 # ==================== BAZARAKI SCRAPER CLASS ====================
@@ -168,7 +162,7 @@ class BazarakiScraper:
             'paphos': 'pafos-district-paphos'
         }
     
-    def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999, max_listings: int = None) -> List[Dict]:
+    def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999, max_listings: int = None, db_connection: Optional['DBConnection'] = None) -> List[Dict]:
         """Fetch property listings from Bazaraki using Selenium"""
         properties = []
         
@@ -225,6 +219,17 @@ class BazarakiScraper:
                     property_data = self._parse_listing(listing)
                     if property_data:
                         properties.append(property_data)
+                        
+                        # Upload immediately if database connection is provided
+                        if db_connection:
+                            try:
+                                inserted = db_connection.insert_property(property_data)
+                                if inserted:
+                                    print(f"    ✓ Uploaded to database: {property_data.get('external_id')}")
+                                else:
+                                    print(f"    ✗ Not inserted (DB error): {property_data.get('external_id')}")
+                            except Exception as db_error:
+                                print(f"    ✗ Failed to upload: {db_error}")
                 
                 # Stop if we've reached max_listings
                 if max_listings and len(properties) >= max_listings:
@@ -272,12 +277,6 @@ class BazarakiScraper:
                     fix_hairline=False)
             
             print("WebDriver ready")
-        except Exception as e:
-            print(f"Error initializing WebDriver: {e}")
-            raise
-        except Exception as e:
-            print(f"Error initializing WebDriver: {e}")
-            raise
         except Exception as e:
             print(f"Error initializing WebDriver: {e}")
             raise
@@ -416,7 +415,7 @@ class BazarakiScraper:
                 'energy_efficiency': d.get('energy_efficiency'),
                 'price_per_sqm': d.get('price_per_sqm'),
                 'description': d.get('description'),
-                'scraped_date': datetime.now().isoformat(),
+                'scraped_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             }
             
             return property_data
@@ -506,9 +505,11 @@ class BazarakiScraper:
             
             # ---- PRICE PER SQM ----
             page_text = soup.get_text()
-            price_sqm_match = re.search(r'\u20ac([\d,.]+)/m\u00b2', page_text)
+            price_sqm_match = re.search(r'\u20ac\s*([\d,.]+)\s*/\s*m\u00b2', page_text)
             if price_sqm_match:
-                detail_data['price_per_sqm'] = price_sqm_match.group(1).replace(',', '')
+                parsed = self._extract_price(price_sqm_match.group(1))
+                if parsed is not None:
+                    detail_data['price_per_sqm'] = parsed
             
             # ---- FEATURES / PARAMETERS ----
             field_map = {
@@ -530,8 +531,37 @@ class BazarakiScraper:
                 'Bathrooms': 'bathrooms',
                 'Square meter price': 'price_per_sqm',
             }
-            
-            # Desktop params
+
+            def _norm_label(text: str) -> str:
+                return re.sub(r'\s+', ' ', (text or '')).strip().rstrip(':').lower()
+
+            label_to_key = {_norm_label(k): v for k, v in field_map.items()}
+
+            # Primary: announcement-characteristics (key-chars/value-chars)
+            chars_div = soup.find('div', class_=lambda x: x and 'announcement-characteristics' in str(x))
+            if chars_div:
+                for li in chars_div.find_all('li'):
+                    key_elem = li.find('span', class_='key-chars')
+                    if not key_elem:
+                        continue
+                    key_norm = _norm_label(key_elem.get_text(' ', strip=True))
+                    db_key = label_to_key.get(key_norm)
+                    if not db_key:
+                        continue
+
+                    # Some keys (like Included) can have multiple values
+                    value_elems = li.find_all(class_='value-chars')
+                    values = [v.get_text(' ', strip=True) for v in value_elems if v.get_text(strip=True)]
+                    if not values:
+                        continue
+
+                    if db_key == 'included':
+                        for v in values:
+                            self._set_detail_field(detail_data, db_key, v)
+                    else:
+                        self._set_detail_field(detail_data, db_key, values[0])
+
+            # Fallback: announcement-parameters (older layout)
             param_items = soup.find_all('li', class_=lambda x: x and 'announcement-parameters' in str(x))
             for item in param_items:
                 item_text = item.get_text(strip=True)
@@ -585,6 +615,7 @@ class BazarakiScraper:
         """Parse and set a detail field with proper type conversion"""
         if not value:
             return
+        value = re.sub(r'\s+', ' ', str(value)).strip()
         if key in ('property_area_sqm', 'plot_area_sqm'):
             m = re.search(r'(\d+)', value)
             if m:
@@ -598,9 +629,16 @@ class BazarakiScraper:
             if m:
                 detail_data[key] = int(m.group(1))
         elif key == 'price_per_sqm':
-            m = re.search(r'[\d,.]+', value)
-            if m:
-                detail_data[key] = m.group(0).replace(',', '')
+            parsed = self._extract_price(value)
+            if parsed is not None:
+                detail_data[key] = parsed
+        elif key == 'included':
+            items = detail_data.get('included')
+            if not isinstance(items, list):
+                items = []
+            if value and value not in items:
+                items.append(value)
+            detail_data['included'] = items
         else:
             detail_data[key] = value
     

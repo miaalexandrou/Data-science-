@@ -551,7 +551,8 @@ class BazarakiScraper:
 
                     # Some keys (like Included) can have multiple values
                     value_elems = li.find_all(class_='value-chars')
-                    values = [v.get_text(' ', strip=True) for v in value_elems if v.get_text(strip=True)]
+                    values = [v.get_text(strip=True) for v in value_elems if v.get_text(strip=True)]
+                    
                     if not values:
                         continue
 
@@ -636,8 +637,13 @@ class BazarakiScraper:
             items = detail_data.get('included')
             if not isinstance(items, list):
                 items = []
-            if value and value not in items:
-                items.append(value)
+            
+            # Split comma-separated values into individual items
+            for item in value.split(','):
+                item = item.strip()
+                if item and item not in items:
+                    items.append(item)
+            
             detail_data['included'] = items
         else:
             detail_data[key] = value

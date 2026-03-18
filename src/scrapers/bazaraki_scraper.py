@@ -163,8 +163,8 @@ class BazarakiScraper:
         # City to district mapping for Bazaraki URLs
         self.city_mapping = {
             'nicosia': 'lefkosia-district-nicosia',
-            'limassol': 'lemesou-district-limassol',
-            'larnaka': 'larnakas-district-larnaca',
+            'limassol': 'lemesos-district-limassol',  # Corrected mapping
+            'larnaka': 'larnaka-district-larnaca',
             'paphos': 'pafou-district-paphos'
         }
     

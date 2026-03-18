@@ -165,7 +165,7 @@ class BazarakiScraper:
             'nicosia': 'lefkosia-district-nicosia',
             'limassol': 'lemesos-district-limassol',  # Corrected mapping
             'larnaka': 'larnaka-district-larnaca',
-            'paphos': 'pafou-district-paphos'
+            'paphos': 'pafos-district-paphos'
         }
     
     def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999, max_listings: int = None) -> List[Dict]:

@@ -15,21 +15,16 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 import time
 import json
+import sys
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import re
 import random
-import os
-import sys
 
-
-# Allow importing sibling package: src/database/db_connection.py
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.dirname(CURRENT_DIR)
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-from database.db_connection import DBConnection
+# Allow imports from the src/ root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.database.db_connection import DBConnection
 
 
 # ==================== MAIN FUNCTION ====================
@@ -117,30 +112,27 @@ def main():
             properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings)
             all_properties.extend(properties)
             
-            # Minimal delay between cities
-            time.sleep(0.05)
+            # Human-like pause between cities
+            city_pause = random.uniform(10, 20)
+            print(f"Pausing {city_pause:.1f}s before next city...")
+            time.sleep(city_pause)
         
-        # Save results
+        # ── Save to database ──────────────────────────────────────
+        print(f"\nSaving {len(all_properties)} properties to database...")
+        with DBConnection() as db:
+            inserted = db.insert_properties(all_properties)
+
+        # ── Save JSON backup ─────────────────────────────────────────
         output_dir = 'data/raw'
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, 'bazaraki_properties.json')
         scraper.save_to_json(all_properties, output_file)
 
-        # Upload to database
-        if all_properties:
-            try:
-                with DBConnection() as db:
-                    inserted = db.insert_properties(all_properties)
-                print(f"Uploaded to DB: {inserted} new row(s) inserted")
-            except Exception as db_error:
-                print(f"Database upload failed: {db_error}")
-        else:
-            print("No properties scraped; skipping database upload.")
-        
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
-        print(f"Total properties collected: {len(all_properties)}")
-        print(f"Saved to: {output_file}")
+        print(f"Total properties collected : {len(all_properties)}")
+        print(f"New rows inserted to DB    : {inserted}")
+        print(f"JSON backup saved to       : {output_file}")
         print(f"{'='*60}")
     except Exception as e:
         print(f"Error during scraping: {e}")
@@ -187,28 +179,31 @@ class BazarakiScraper:
             try:
                 self.driver.get(page_url)
                 
-                # Wait for page to load
-                time.sleep(2)
+                # Human-like wait for page to load
+                time.sleep(random.uniform(2.5, 5.0))
                 
-                # Wait for listings to appear (try desktop then mobile selectors)
+                # Try to wait for listings
                 try:
                     WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.advert, [class*='CardGrid_container']"))
+                        EC.presence_of_all_elements_located((By.CLASS_NAME, "CardGrid_container"))
                     )
                 except:
                     pass
                 
+                # Simulate human scrolling down the page
+                self._human_scroll()
+                
                 soup = BeautifulSoup(self.driver.page_source, 'html.parser')
                 
-                # Desktop version: .advert containers
-                listings = soup.find_all('div', class_='advert')
+                # Find property listings - look for CardGrid containers  
+                listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
                 
                 if not listings:
-                    # Mobile version: CardGrid containers
-                    listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
+                    # Try Features_item selector
+                    listings = soup.find_all(class_=lambda x: x and 'Features_item' in x)
                 
                 if not listings:
-                    # Fallback: advert-grid containers
+                    # Try advert-grid containers
                     listings = soup.find_all(class_=lambda x: x and 'advert-grid__item' in x)
                 
                 if not listings:
@@ -230,8 +225,10 @@ class BazarakiScraper:
                 if max_listings and len(properties) >= max_listings:
                     break
                 
-                # No delay between pages
-                time.sleep(0.05)
+                # Human-like pause between pages
+                page_pause = random.uniform(4, 9)
+                print(f"  Pausing {page_pause:.1f}s before next page...")
+                time.sleep(page_pause)
                 
             except Exception as e:
                 print(f"Error fetching page {page}: {e}")
@@ -244,44 +241,61 @@ class BazarakiScraper:
         """Initialize Chrome WebDriver with stealth options"""
         try:
             ua = UserAgent()
-            self._user_agent = ua.random
             chrome_options = Options()
-            chrome_options.add_argument(f"--user-agent={self._user_agent}")
+            chrome_options.add_argument(f"--user-agent={ua.random}")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_argument("--disable-gpu")
+            # Randomise window size to a common desktop resolution
+            width  = random.choice([1280, 1366, 1440, 1536, 1920])
+            height = random.choice([768, 800, 900, 1080])
+            chrome_options.add_argument(f"--window-size={width},{height}")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            # Disable image loading via preferences
-            prefs = {"profile.managed_default_content_settings.images": 2}
-            chrome_options.add_experimental_option("prefs", prefs)
             
             service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             
-            # Apply selenium-stealth
+            # Apply selenium-stealth to avoid detection
             stealth(self.driver,
-                    user_agent=self._user_agent,
+                    user_agent=ua.random,
                     languages=["en-US", "en"],
                     vendor="Google Inc.",
-                    platform="Win32",
+                    platform="MacIntel",
                     webgl_vendor="Intel Inc.",
                     renderer="Intel Iris OpenGL Engine",
-                    fix_hairline=False)
+                    fix_hairline=True)
+            
+            # Warm-up: visit the homepage first so later requests look like
+            # natural in-site navigation rather than direct bot hits
+            print("Warming up — visiting homepage...")
+            self.driver.get(self.base_url)
+            time.sleep(random.uniform(3, 6))
+            self._human_scroll()
             
             print("WebDriver ready")
         except Exception as e:
             print(f"Error initializing WebDriver: {e}")
             raise
-        except Exception as e:
-            print(f"Error initializing WebDriver: {e}")
-            raise
-        except Exception as e:
-            print(f"Error initializing WebDriver: {e}")
-            raise
     
+    def _human_scroll(self):
+        """Simulate a human slowly scrolling down then back up a page"""
+        try:
+            total_height = self.driver.execute_script("return document.body.scrollHeight")
+            viewport    = self.driver.execute_script("return window.innerHeight")
+            steps       = random.randint(3, 7)
+            step_size   = total_height // (steps + 1)
+            for i in range(1, steps + 1):
+                scroll_to = min(step_size * i, total_height - viewport)
+                self.driver.execute_script(f"window.scrollTo(0, {scroll_to});")
+                time.sleep(random.uniform(0.3, 0.9))
+            # Small scroll back up — humans rarely stay at the bottom
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(random.uniform(0.2, 0.5))
+        except Exception:
+            pass
+
     def close_driver(self):
         """Safely close the WebDriver"""
         if self.driver:
@@ -292,25 +306,10 @@ class BazarakiScraper:
                 pass
     
     def _parse_listing(self, listing) -> Optional[Dict]:
-        """Parse individual property listing — supports both desktop and mobile HTML"""
+        """Parse individual property listing from Bazaraki's CardGrid structure"""
         try:
-            # --- Desktop version (.advert classes) ---
-            is_desktop = listing.get('class') and 'advert' in listing.get('class', [])
-            
-            if is_desktop:
-                title_elem = listing.find(class_='advert__content-title')
-                price_elem = listing.find(class_='advert__content-price')
-                place_elem = listing.find(class_='advert__content-place')
-                feature_elems = listing.find_all(class_='advert__content-feature')
-                property_id = listing.get('data-id', '')
-            else:
-                # Mobile version (CardGrid classes)
-                title_elem = listing.find(class_=lambda x: x and 'CardGrid_title' in x)
-                price_elem = listing.find(class_=lambda x: x and 'CardGrid_price' in x)
-                place_elem = None
-                feature_elems = []
-                property_id = ''
-            
+            # Extract title
+            title_elem = listing.find(class_=lambda x: x and 'CardGrid_title' in x)
             if not title_elem:
                 return None
             
@@ -328,66 +327,33 @@ class BazarakiScraper:
                 return None
             
             # Extract price
+            price_elem = listing.find(class_=lambda x: x and 'CardGrid_price' in x)
             price_text = price_elem.get_text(strip=True) if price_elem else ''
             price = self._extract_price(price_text)
             
-            # Extract property ID from URL if not from data-id
-            if not property_id:
-                property_id = self._extract_id_from_url(property_url)
+            # Extract location info from text content
+            all_text = listing.get_text(strip=True)
             
-            # Extract location from place element or text
-            city = ''
-            area = ''
-            if place_elem:
-                place_text = place_elem.get_text(strip=True)
-                place_parts = [p.strip() for p in place_text.split(',')]
-                city = place_parts[0] if len(place_parts) > 0 else ''
-                area = place_parts[1] if len(place_parts) > 1 else ''
-            
-            # Extract basic features from listing (desktop)
+            # Extract bedrooms from title
             bedrooms = None
-            bathrooms = None
-            property_area_sqm = None
-            plot_area_sqm = None
-            parking = None
+            bed_match = re.search(r'(\d+)-?bedroom', all_text, re.IGNORECASE)
+            if bed_match:
+                bedrooms = int(bed_match.group(1))
             
-            if feature_elems:
-                # Desktop features order: bedrooms, bathrooms, area, plot, parking
-                feat_texts = [f.get_text(strip=True) for f in feature_elems]
-                if len(feat_texts) >= 1:
-                    m = re.search(r'(\d+)', feat_texts[0])
-                    if m:
-                        bedrooms = int(m.group(1))
-                if len(feat_texts) >= 2:
-                    m = re.search(r'(\d+)', feat_texts[1])
-                    if m:
-                        bathrooms = int(m.group(1))
-                if len(feat_texts) >= 3:
-                    m = re.search(r'(\d+)', feat_texts[2])
-                    if m:
-                        property_area_sqm = int(m.group(1))
-                if len(feat_texts) >= 4:
-                    m = re.search(r'(\d+)', feat_texts[3])
-                    if m:
-                        plot_area_sqm = int(m.group(1))
-                if len(feat_texts) >= 5:
-                    parking = feat_texts[4]
-            else:
-                # Try to extract bedrooms from title
-                all_text = listing.get_text(strip=True)
-                bed_match = re.search(r'(\d+)-?bedroom', all_text, re.IGNORECASE)
-                if bed_match:
-                    bedrooms = int(bed_match.group(1))
+            property_id = self._extract_id_from_url(property_url)
+            
+            # Extract location from the text
+            location_parts = all_text.split('—')
+            area = location_parts[-1].strip() if len(location_parts) > 1 else ''
             
             # Build full URL
             full_url = f"{self.base_url}{property_url}"
             
-            # Fetch detailed page for extra info (small delay to avoid Cloudflare)
-            time.sleep(random.uniform(1.0, 2.5))
+            # Fetch all details from property detail page
             print(f"  Fetching details: {property_id}...")
             detail_data = self._fetch_property_details(full_url)
             
-            # Use detail data to override/supplement listing data
+            # Use detail data for everything
             d = detail_data if detail_data else {}
             
             property_data = {
@@ -397,15 +363,15 @@ class BazarakiScraper:
                 'url': full_url,
                 'title': title,
                 'price': price,
-                'city': d.get('city', city or 'Unknown'),
+                'city': d.get('city', 'Nicosia'),
                 'district': d.get('district', ''),
                 'area': d.get('area', area),
                 'bedrooms': d.get('bedrooms', bedrooms),
-                'bathrooms': d.get('bathrooms', bathrooms),
-                'property_area_sqm': d.get('property_area_sqm', property_area_sqm),
-                'plot_area_sqm': d.get('plot_area_sqm', plot_area_sqm),
+                'bathrooms': d.get('bathrooms'),
+                'property_area_sqm': d.get('property_area_sqm'),
+                'plot_area_sqm': d.get('plot_area_sqm'),
                 'property_type': d.get('property_type'),
-                'parking': d.get('parking', parking),
+                'parking': d.get('parking'),
                 'condition': d.get('condition'),
                 'furnishing': d.get('furnishing'),
                 'included': d.get('included'),
@@ -415,7 +381,6 @@ class BazarakiScraper:
                 'air_conditioning': d.get('air_conditioning'),
                 'energy_efficiency': d.get('energy_efficiency'),
                 'price_per_sqm': d.get('price_per_sqm'),
-                'description': d.get('description'),
                 'scraped_date': datetime.now().isoformat(),
             }
             
@@ -426,91 +391,65 @@ class BazarakiScraper:
             return None
     
     def _fetch_property_details(self, property_url: str) -> Optional[Dict]:
-        """Fetch detail page using a separate Chrome instance to avoid Cloudflare"""
-        detail_driver = None
+        """Fetch detailed information from individual property page"""
         try:
-            # Create a separate browser instance for the detail page
-            ua = UserAgent()
-            detail_ua = ua.random
-            chrome_options = Options()
-            chrome_options.add_argument(f"--user-agent={detail_ua}")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            prefs = {"profile.managed_default_content_settings.images": 2}
-            chrome_options.add_experimental_option("prefs", prefs)
+            self.driver.get(property_url)
+            time.sleep(random.uniform(2, 5))
+            self._human_scroll()
             
-            service = Service(ChromeDriverManager().install())
-            detail_driver = webdriver.Chrome(service=service, options=chrome_options)
+            # Click "Show more features" button using JavaScript (more reliable than .click())
+            try:
+                show_more_buttons = self.driver.find_elements(By.CSS_SELECTOR, '[class*="Features_show-more"]')
+                for btn in show_more_buttons:
+                    try:
+                        self.driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
             
-            stealth(detail_driver,
-                    user_agent=detail_ua,
-                    languages=["en-US", "en"],
-                    vendor="Google Inc.",
-                    platform="Win32",
-                    webgl_vendor="Intel Inc.",
-                    renderer="Intel Iris OpenGL Engine",
-                    fix_hairline=False)
+            # Also try clicking any "Show more" text links
+            try:
+                show_more_links = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Show more')]")
+                for link in show_more_links:
+                    try:
+                        self.driver.execute_script("arguments[0].click();", link)
+                        time.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
             
-            detail_driver.get(property_url)
-            time.sleep(2.5)
-            
-            # Handle Cloudflare
-            for _ in range(15):
-                title = detail_driver.title or ''
-                if 'just a moment' in title.lower():
-                    time.sleep(1)
-                else:
-                    break
-            
-            soup = BeautifulSoup(detail_driver.page_source, 'html.parser')
+            # Re-parse after clicking show more
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             detail_data = {}
             
-            # Check blocked
-            title_tag = soup.find('title')
-            if title_tag and 'just a moment' in title_tag.get_text().lower():
-                print("    Cloudflare blocked detail page")
-                return None
-            
-            # ---- LOCATION ----
-            for param_item in soup.find_all('li', class_=lambda x: x and 'announcement-parameters' in str(x)):
-                text = param_item.get_text(strip=True)
-                if text.startswith('Location'):
-                    loc = text.replace('Location', '').strip().strip(':')
-                    parts = [p.strip() for p in loc.split(',')]
+            # Extract location from detail page
+            for div in soup.find_all(class_=lambda x: x and 'Detail_block' in x):
+                text = div.get_text(strip=True)
+                if text.startswith('Location:'):
+                    loc = text.replace('Location:', '').strip()
+                    # Format: "Nicosia — Strovolos - Chryseleousa"
+                    parts = loc.split('—')
                     if len(parts) >= 1:
-                        detail_data['city'] = parts[0]
+                        detail_data['city'] = parts[0].strip()
                     if len(parts) >= 2:
-                        detail_data['district'] = parts[1]
-                    if len(parts) >= 3:
-                        detail_data['area'] = parts[2]
+                        sub_parts = parts[1].strip().split(' - ')
+                        detail_data['district'] = sub_parts[0].strip() if sub_parts else ''
+                        detail_data['area'] = sub_parts[-1].strip() if len(sub_parts) > 1 else ''
+                    break
             
-            # Mobile: Detail_block
-            if 'city' not in detail_data:
-                for div in soup.find_all(class_=lambda x: x and 'Detail_block' in x):
-                    text = div.get_text(strip=True)
-                    if text.startswith('Location:'):
-                        loc = text.replace('Location:', '').strip()
-                        parts = loc.split('\u2014')
-                        if len(parts) >= 1:
-                            detail_data['city'] = parts[0].strip()
-                        if len(parts) >= 2:
-                            sub_parts = parts[1].strip().split(' - ')
-                            detail_data['district'] = sub_parts[0].strip()
-                            detail_data['area'] = sub_parts[-1].strip() if len(sub_parts) > 1 else ''
-                        break
-            
-            # ---- PRICE PER SQM ----
-            page_text = soup.get_text()
-            price_sqm_match = re.search(r'\u20ac([\d,.]+)/m\u00b2', page_text)
+            # Extract price per sqm from header
+            price_text = soup.get_text()
+            price_sqm_match = re.search(r'€([\d,.]+)/m²', price_text)
             if price_sqm_match:
                 detail_data['price_per_sqm'] = price_sqm_match.group(1).replace(',', '')
             
-            # ---- FEATURES / PARAMETERS ----
+            # Parse all Features_item divs — these are the key-value property details
+            feature_items = soup.find_all(class_=lambda x: x and 'Features_item' in x and 'show-more' not in x)
+            
+            # Map of label → key name
             field_map = {
                 'Reference number': 'reference_number',
                 'Property area': 'property_area_sqm',
@@ -525,84 +464,44 @@ class BazarakiScraper:
                 'Online viewing': 'online_viewing',
                 'Air conditioning': 'air_conditioning',
                 'Energy Efficiency': 'energy_efficiency',
-                'Energy efficiency': 'energy_efficiency',
                 'Bedrooms': 'bedrooms',
                 'Bathrooms': 'bathrooms',
                 'Square meter price': 'price_per_sqm',
             }
             
-            # Desktop params
-            param_items = soup.find_all('li', class_=lambda x: x and 'announcement-parameters' in str(x))
-            for item in param_items:
+            for item in feature_items:
                 item_text = item.get_text(strip=True)
+                
                 for label, key in field_map.items():
                     if item_text.startswith(label):
-                        value = item_text[len(label):].strip().strip(':')
-                        self._set_detail_field(detail_data, key, value)
+                        value = item_text[len(label):].strip()
+                        
+                        # Parse numeric fields
+                        if key in ('property_area_sqm', 'plot_area_sqm'):
+                            m = re.search(r'(\d+)', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key in ('bedrooms', 'bathrooms'):
+                            m = re.search(r'(\d+)', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key == 'construction_year':
+                            m = re.search(r'(\d{4})', value)
+                            if m:
+                                detail_data[key] = int(m.group(1))
+                        elif key == 'price_per_sqm':
+                            m = re.search(r'[\d,.]+', value)
+                            if m:
+                                detail_data[key] = m.group(0).replace(',', '')
+                        else:
+                            detail_data[key] = value
                         break
-            
-            # Mobile Features_item
-            if not param_items:
-                feature_items = soup.find_all(class_=lambda x: x and 'Features_item' in x and 'show-more' not in x)
-                for item in feature_items:
-                    item_text = item.get_text(strip=True)
-                    for label, key in field_map.items():
-                        if item_text.startswith(label):
-                            value = item_text[len(label):].strip()
-                            self._set_detail_field(detail_data, key, value)
-                            break
-            
-            # ---- DESCRIPTION ----
-            desc_elem = soup.find('div', class_='js-description')
-            if not desc_elem:
-                desc_elem = soup.find('div', class_=lambda x: x and 'announcement-description' in str(x))
-            if not desc_elem:
-                desc_elem = soup.find(attrs={'itemprop': 'description'})
-            if not desc_elem:
-                desc_elem = soup.find(class_=lambda x: x and 'Description_container' in x)
-            if desc_elem:
-                description = desc_elem.get_text(separator=' ', strip=True)
-                description = re.sub(
-                    r'(Show original|Read more|Translate to:?|Ελληνικα|English|Русский|Deutsch|Description\s*:?\s*)',
-                    '', description).strip()
-                description = re.sub(r'\s{2,}', ' ', description)
-                if len(description) > 10:
-                    detail_data['description'] = description
             
             return detail_data if detail_data else None
             
         except Exception as e:
             print(f"  Error fetching details: {e}")
             return None
-        finally:
-            if detail_driver:
-                try:
-                    detail_driver.quit()
-                except:
-                    pass
-    
-    def _set_detail_field(self, detail_data: Dict, key: str, value: str):
-        """Parse and set a detail field with proper type conversion"""
-        if not value:
-            return
-        if key in ('property_area_sqm', 'plot_area_sqm'):
-            m = re.search(r'(\d+)', value)
-            if m:
-                detail_data[key] = int(m.group(1))
-        elif key in ('bedrooms', 'bathrooms'):
-            m = re.search(r'(\d+)', value)
-            if m:
-                detail_data[key] = int(m.group(1))
-        elif key == 'construction_year':
-            m = re.search(r'(\d{4})', value)
-            if m:
-                detail_data[key] = int(m.group(1))
-        elif key == 'price_per_sqm':
-            m = re.search(r'[\d,.]+', value)
-            if m:
-                detail_data[key] = m.group(0).replace(',', '')
-        else:
-            detail_data[key] = value
     
     
     def _extract_id_from_url(self, url: str) -> str:

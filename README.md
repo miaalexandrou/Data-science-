@@ -1,6 +1,6 @@
-# Cyprus Real Estate - Best Value Search Engine   🏠
+# Cyprus Real Estate – Best Value Search Engine 🏠
 
-**CSE 473/525 Data Science Group Project - Phase A**  
+**CSE 473/525 Data Science Group Project – Phase A**  
 **Team DataVision**  
 **Semester 8, Spring 2026**
 
@@ -8,7 +8,7 @@
 
 ## 📋 Project Overview
 
-The **Cyprus Real Estate Best Value Search Engine** is a data science project that aims to identify undervalued residential properties in Cyprus by analyzing listing data from multiple sources. The system scrapes, processes, and analyzes real estate data to help buyers find the best value-for-money properties.
+The **Cyprus Real Estate Best Value Search Engine** is a data science project that identifies undervalued residential properties in Cyprus by analyzing listing data from multiple sources. The system scrapes, stores, and analyzes real estate listings to highlight the best value-for-money properties.
 
 ### Research Question
 **Can we identify undervalued residential properties in Cyprus by analyzing listing data from multiple sources?**
@@ -23,301 +23,163 @@ The **Cyprus Real Estate Best Value Search Engine** is a data science project th
 
 ## 🎯 Project Goals
 
-1. **Data Collection**: Scrape property listings from Bazaraki.com and Spitogatos.com.cy
-2. **Data Storage**: Store structured data in PostgreSQL database
+1. **Data Collection**: Scrape property listings from Bazaraki.com
+2. **Data Storage**: Store structured data in a relational database
 3. **Data Analysis**: Analyze price trends and property characteristics
 4. **ML Modeling**: Predict fair market value and identify undervalued properties
-5. **Visualization**: Create interactive dashboard for exploring properties
+5. **Visualization**: Create an interactive dashboard for exploring properties
 
 ---
 
-## 🏗️ Project Structure
+## 🗄️ Database Service (Database/)
 
-```
-cyprus-real-estate/
-├── README.md                   # Project documentation
-├── requirements.txt            # Python dependencies
-├── .env.example               # Environment variables template
-├── .gitignore                 # Git ignore file
-│
-├── src/                       # Source code
-│   ├── scrapers/              # Web scraping modules
-│   │   ├── bazaraki_scraper.py
-│   │   └── spitogatos_scraper.py
-│   ├── database/              # Database operations
-│   │   ├── db_setup.py
-│   │   └── db_operations.py
-│   ├── models/                # ML models
-│   │   └── price_predictor.py
-│   └── utils/                 # Utility functions
-│       └── data_cleaning.py
-│
-├── data/                      # Data storage
-│   ├── raw/                   # Raw scraped data
-│   └── processed/             # Cleaned data
-│
-├── notebooks/                 # Jupyter notebooks
-│   └── exploratory_analysis.ipynb
-│
-├── docs/                      # Documentation
-│   ├── phase_a_report.md      # Phase A report
-│   └── database_schema.sql    # Database schema
-│
-└── app/                       # Web application (Phase B)
-    └── streamlit_app.py
-```
-
----
-
-## 🚀 Installation & Setup
+The `Database/` folder contains the Docker configuration for running a MariaDB database used by this project.
 
 ### Prerequisites
-- Python 3.9+
-- PostgreSQL 13+ (or SQLite for local testing)
-- pip package manager
 
-### Step 1: Clone Repository
+- **Docker**: [Install Docker](https://www.docker.com/products/docker-desktop)
+- **Docker Compose**: Included with Docker Desktop
+
+Verify installation:
 ```bash
-git clone <repository-url>
-cd Data-science-
+docker --version
+docker-compose --version
 ```
 
-### Step 2: Install Dependencies
+### 1. Start the Database
+
+From the `Database/` directory, run:
 ```bash
-pip install -r requirements.txt
+docker-compose -f db.yaml up -d
 ```
+The `-d` flag runs the container in the background (detached mode).
 
-### Step 3: Database Setup
-1. Create PostgreSQL database:
+### 2. Verify the Container is Running
+
 ```bash
-createdb cyprus_real_estate
+docker ps | grep DataScience-mysql-db
+```
+You should see something similar to:
+```text
+DataScience-mysql-db   mariadb:10.2.32   Up (health: starting)   0.0.0.0:3306->3306/tcp
 ```
 
-2. Run schema setup:
+### 3. Connect to the Database
+
+#### Option A: Using MySQL CLI
 ```bash
-psql -d cyprus_real_estate -f docs/database_schema.sql
+mysql -h localhost -u DataScience-user -p DataScience
+# Password: DataScience_pass_2025
 ```
 
-### Step 4: Environment Configuration
-1. Copy `.env.example` to `.env`:
+#### Option B: Using Python
+```python
+import mysql.connector
+
+conn = mysql.connector.connect(
+    host="localhost",
+    user="DataScience-user",
+    password="DataScience_pass_2025",
+    database="DataScience",
+    port=3306,
+)
+```
+
+#### Option C: Using a SQL client
+- Host: `localhost`
+- Port: `3306`
+- Database: `DataScience`
+- User: `DataScience-user`
+- Password: `DataScience_pass_2025`
+
+### Database Credentials
+
+| Credential        | Value                   |
+|-------------------|-------------------------|
+| **Host**          | localhost               |
+| **Port**          | 3306                    |
+| **Root User**     | root                    |
+| **Root Password** | DataScience_root_2025   |
+| **Database**      | DataScience             |
+| **App User**      | DataScience-user        |
+| **App Password**  | DataScience_pass_2025   |
+
+### Container Management
+
+View logs:
 ```bash
-cp .env.example .env
+docker logs DataScience-mysql-db
 ```
 
-2. Edit `.env` with your database credentials:
-```
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=cyprus_real_estate
-DB_USER=your_username
-DB_PASSWORD=your_password
-```
-
----
-
-## 📊 Usage
-
-### 1. Run Web Scrapers
-
-**Scrape Bazaraki:**
+Stop the container:
 ```bash
-python src/scrapers/bazaraki_scraper.py
+docker-compose -f db.yaml down
 ```
 
-**Scrape Spitogatos:**
+Remove the container and data (⚠️ deletes all data):
 ```bash
-python src/scrapers/spitogatos_scraper.py
+docker-compose -f db.yaml down -v
 ```
 
-### 2. Process Data
+Restart the container:
 ```bash
-python src/utils/data_cleaning.py
+docker-compose -f db.yaml restart
 ```
 
-### 3. Run Analysis (Jupyter Notebook)
+### Health Check
+
+The container includes an automatic health check that:
+- Runs every 10 seconds
+- Times out after 5 seconds
+- Retries up to 5 times before marking the container as unhealthy
+
+View health status:
 ```bash
-jupyter notebook notebooks/exploratory_analysis.ipynb
+docker ps
 ```
 
-### 4. Launch Dashboard (Phase B)
+### Data Persistence
+
+Database data is stored in the `mysql_data` volume, so it persists even if the container is stopped.
+
+List volumes:
 ```bash
-streamlit run app/streamlit_app.py
+docker volume ls | grep mysql_data
+```
+
+### Troubleshooting
+
+**Port 3306 already in use**
+```bash
+# Find what's using port 3306
+lsof -i :3306
+
+# Or stop MySQL/MariaDB containers
+docker ps | grep -E "mysql|mariadb"
+docker stop <container_id>
+```
+
+**Connection refused**
+Wait a few seconds for the container to fully start, then check logs:
+```bash
+docker logs DataScience-mysql-db
+```
+
+**Container won't start**
+```bash
+docker-compose -f db.yaml down
+docker volume rm data-science-_mysql_data
+docker-compose -f db.yaml up -d
 ```
 
 ---
 
-## 📈 Data Sources
+## 🚀 Next Steps
 
-### 1. Bazaraki.com
-- Cyprus's largest classified ads platform
-- Categories: Residential properties for sale
-- Data: Price, location, size, features
-
-### 2. Spitogatos.com.cy
-- Specialized real estate platform
-- Data: Price, area, property type, amenities
-
----
-
-## 🗄️ Database Schema
-
-### Main Tables
-- **properties**: Core property information
-- **price_history**: Track price changes over time
-- **scraping_logs**: Monitor scraping activities
-
-### Key Features
-- ACID compliance with PostgreSQL
-- Price change tracking with triggers
-- Efficient indexing for queries
-- Support for geospatial data
-
-See [database_schema.sql](docs/database_schema.sql) for full schema.
-
----
-
-## 🤖 Machine Learning (Phase B)
-
-### Planned Models
-
-1. **Price Prediction Model** (Regression)
-   - Random Forest Regressor
-   - Gradient Boosting (XGBoost)
-   - Features: location, size, bedrooms, amenities
-   - Target: Fair market value
-
-2. **Value Score Calculation**
-   - Value Score = Predicted Price / Actual Price
-   - Score > 1.1 = Undervalued
-   - Score 0.9-1.1 = Fair value
-   - Score < 0.9 = Overvalued
-
-3. **Property Clustering**
-   - K-Means clustering
-   - Identify market segments
-
----
-
-## 📅 Project Timeline
-
-### Phase A (Due: March 30, 2026)
-- [x] Project setup and planning
-- [x] Database schema design
-- [x] Web scrapers development
-- [ ] Initial data collection
-- [ ] Exploratory data analysis
-- [ ] Phase A report and presentation
-
-### Phase B (Due: April 27, 2026)
-- [ ] Complete data pipeline
-- [ ] ML model development
-- [ ] Dashboard development
-- [ ] Model monitoring
-- [ ] Final report and presentation
-
----
-
-## 🛡️ Ethical Considerations
-
-### Data Collection Ethics
-- ✅ Only scraping publicly available data
-- ✅ Respecting robots.txt directives
-- ✅ Rate limiting to avoid server overload
-- ✅ No collection of personal information
-- ✅ GDPR compliance
-
-### Responsible AI
-- Transparent about model limitations
-- Predictions are estimates, not guarantees
-- Users should verify with professionals
-- No market manipulation intent
-
----
-
-## 👥 Team Roles
-
-| Role | Responsibilities |
-|------|------------------|
-| **Project Manager** | Coordination, timeline, reporting |
-| **Data Engineer** | Scrapers, database, data pipeline |
-| **Data Scientist** | Modeling, feature engineering, analysis |
-| **Frontend Developer** | Dashboard development, UX |
-
----
-
-## 📚 Technology Stack
-
-### Backend
-- **Language**: Python 3.9+
-- **Database**: PostgreSQL
-- **Web Scraping**: BeautifulSoup, Selenium
-- **Data Processing**: Pandas, NumPy
-
-### Machine Learning
-- **Framework**: scikit-learn, XGBoost
-- **Evaluation**: cross-validation, MAE, R²
-
-### Frontend (Phase B)
-- **Dashboard**: Streamlit
-- **Visualization**: Plotly, Folium
-- **Maps**: Folium for geospatial visualization
-
-### DevOps
-- **Version Control**: Git/GitHub
-- **Deployment**: Streamlit Cloud (free tier)
-
----
-
-## 📖 Documentation
-
-- [Phase A Report](docs/phase_a_report.md)
-- [Database Schema](docs/database_schema.sql)
-- [API Documentation](docs/api_docs.md) (Phase B)
-
----
-
-## 🐛 Known Issues & Limitations
-
-1. **Website Structure Changes**: Scrapers may break if websites update their HTML
-2. **Data Completeness**: Some properties have missing information
-3. **Sampling Bias**: Only properties listed online are included
-4. **Model Accuracy**: Predictions depend on data quality and features
-
----
-
-## 🔮 Future Enhancements
-
-- [ ] Real-time notifications for new undervalued properties
-- [ ] Mobile application
-- [ ] Integration with more data sources
-- [ ] Property price prediction API
-- [ ] User authentication and saved searches
-- [ ] Email alerts for price drops
-
----
-
-## 📝 License
-
-This project is created for educational purposes as part of CSE 473/525 Data Science course.
-
----
-
-## 📧 Contact
-
-**Team DataVision**  
-CSE 473/525 Data Science  
-Instructor: Σίμος Γερασίμου  
-
-For questions or feedback, please contact via Moodle.
-
----
-
-## 🙏 Acknowledgments
-
-- Course Instructor: Σίμος Γερασίμου
-- Data Sources: Bazaraki.com, Spitogatos.com.cy
-- Cyprus Statistical Service
-
----
-
-**Last Updated**: March 2, 2026
+1. Ensure the database container is running.
+2. Run the property scraper script, for example:
+   ```bash
+   python bazaraki_scraper.py
+   ```
+3. When prompted, choose how much data you want to scrape.
+4. Wait for scraping to finish, then continue with analysis (e.g. using `15_4_house_price_prediction.ipynb`).

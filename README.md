@@ -126,27 +126,6 @@ Restart the container:
 docker-compose -f db.yaml restart
 ```
 
-### Health Check
-
-The container includes an automatic health check that:
-- Runs every 10 seconds
-- Times out after 5 seconds
-- Retries up to 5 times before marking the container as unhealthy
-
-View health status:
-```bash
-docker ps
-```
-
-### Data Persistence
-
-Database data is stored in the `mysql_data` volume, so it persists even if the container is stopped.
-
-List volumes:
-```bash
-docker volume ls | grep mysql_data
-```
-
 ### Troubleshooting
 
 **Port 3306 already in use**

@@ -149,6 +149,7 @@ docker-compose -f db.yaml up -d
 
 ## Next Steps
 
-1. ✅ Container is running
-2. 📊 [Load your scraped data](../data/raw/bazaraki_properties.json) into the database
-3. 🔍 Run queries and analysis
+1.run the bazaraki_scraper.py with python bazaraki_scraper.py
+2.Choose how much data you want to scrape by following the directions
+3.WAIT
+

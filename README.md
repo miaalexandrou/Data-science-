@@ -1,4 +1,4 @@
-# Cyprus Real Estate – Best Value Search Engine 🏠
+# Cyprus Real Estate – Best Value Search Engine 
 
 **CSE 473/525 Data Science Group Project – Phase A**  
 **Team DataVision**  
@@ -6,7 +6,7 @@
 
 ---
 
-## 📋 Project Overview
+##  Project Overview
 
 The **Cyprus Real Estate Best Value Search Engine** is a data science project that identifies undervalued residential properties in Cyprus by analyzing listing data from multiple sources. The system scrapes, stores, and analyzes real estate listings to highlight the best value-for-money properties.
 
@@ -21,7 +21,7 @@ The **Cyprus Real Estate Best Value Search Engine** is a data science project th
 
 ---
 
-## 🎯 Project Goals
+##  Project Goals
 
 1. **Data Collection**: Scrape property listings from Bazaraki.com
 2. **Data Storage**: Store structured data in a relational database
@@ -31,7 +31,7 @@ The **Cyprus Real Estate Best Value Search Engine** is a data science project th
 
 ---
 
-## 🗄️ Database Service (Database/)
+##  Database Service (Database/)
 
 The `Database/` folder contains the Docker configuration for running a MariaDB database used by this project.
 
@@ -174,7 +174,7 @@ docker-compose -f db.yaml up -d
 
 ---
 
-## 🚀 Next Steps
+##  Next Steps
 
 1. Ensure the database container is running.
 2. Run the property scraper script, for example:
@@ -182,4 +182,4 @@ docker-compose -f db.yaml up -d
    python bazaraki_scraper.py
    ```
 3. When prompted, choose how much data you want to scrape.
-4. Wait for scraping to finish, then continue with analysis (e.g. using `15_4_house_price_prediction.ipynb`).
+

@@ -45,7 +45,7 @@ def main():
     selected_cities = _prompt_selected_cities(available_cities)
     print(f"\nSelected cities: {', '.join([c.capitalize() for c in selected_cities])}")
 
-    max_pages, max_listings, page_label = _prompt_page_settings()
+    max_pages, max_listings, max_listings_per_page, page_label = _prompt_page_settings()
     
     print(f"Will scrape: {page_label} per city")
     print("\nStarting scrape...\n")
@@ -65,7 +65,13 @@ def main():
             print(f"Scraping {city.upper()}")
             print(f"{'='*60}")
             
-            properties = scraper.get_property_listings(city=city, max_pages=max_pages, max_listings=max_listings, db_connection=db)
+            properties = scraper.get_property_listings(
+                city=city,
+                max_pages=max_pages,
+                max_listings=max_listings,
+                max_listings_per_page=max_listings_per_page,
+                db_connection=db,
+            )
             all_properties.extend(properties)
             
             # Minimal delay between cities
@@ -115,32 +121,41 @@ def _prompt_selected_cities(available_cities: List[str]) -> List[str]:
             print("Invalid input. Please enter valid numbers.")
 
 
-def _prompt_page_settings() -> tuple[int, Optional[int], str]:
+def _prompt_page_settings() -> tuple[int, Optional[int], Optional[int], str]:
     print("\nHow many pages to scrape per city?")
     print("  1. First page only")
     print("  2. First 5 pages")
     print("  3. First 10 pages")
     print("  4. All available pages")
     print("  5. First 5 listings (testing)")
+    print("  6. Test mode: 1 listing from page 1 and 1 from page 2")
 
     page_map = {
-        '1': (1, None),      # 1 page, no limit
-        '2': (5, None),      # 5 pages, no limit
-        '3': (10, None),     # 10 pages, no limit
-        '4': (999, None),    # all pages, no limit
-        '5': (1, 5)          # 1 page, limit to 5 listings
+        '1': (1, None, None),      # 1 page, no limits
+        '2': (5, None, None),      # 5 pages, no limits
+        '3': (10, None, None),     # 10 pages, no limits
+        '4': (999, None, None),    # all pages, no limits
+        '5': (1, 5, None),         # 1 page, cap total to 5 listings
+        '6': (2, None, 1)          # 2 pages, cap each page to 1 listing
     }
-    labels = ['First page only', 'First 5 pages', 'First 10 pages', 'All pages', 'First 5 listings (testing)']
+    labels = [
+        'First page only',
+        'First 5 pages',
+        'First 10 pages',
+        'All pages',
+        'First 5 listings (testing)',
+        'Test mode: 1 listing from page 1 and 1 from page 2'
+    ]
 
     while True:
-        page_choice = input("\nEnter your choice (1-5): ").strip()
+        page_choice = input("\nEnter your choice (1-6): ").strip()
         if page_choice not in page_map:
-            print("Invalid choice. Please enter 1-5.")
+            print("Invalid choice. Please enter 1-6.")
             continue
 
-        max_pages, max_listings = page_map[page_choice]
+        max_pages, max_listings, max_listings_per_page = page_map[page_choice]
         page_label = labels[int(page_choice) - 1]
-        return max_pages, max_listings, page_label
+        return max_pages, max_listings, max_listings_per_page, page_label
 
 
 # ==================== BAZARAKI SCRAPER CLASS ====================
@@ -162,7 +177,14 @@ class BazarakiScraper:
             'paphos': 'pafos-district-paphos'
         }
     
-    def get_property_listings(self, city: Optional[str] = None, max_pages: int = 999, max_listings: int = None, db_connection: Optional['DBConnection'] = None) -> List[Dict]:
+    def get_property_listings(
+        self,
+        city: Optional[str] = None,
+        max_pages: int = 999,
+        max_listings: int = None,
+        max_listings_per_page: int = None,
+        db_connection: Optional['DBConnection'] = None,
+    ) -> List[Dict]:
         """Fetch property listings from Bazaraki using Selenium"""
         properties = []
         
@@ -179,6 +201,10 @@ class BazarakiScraper:
             print(f"Scraping page {page}...")
             
             try:
+                # Rotate browser instance and user-agent for every paginated request.
+                self.close_driver()
+                self._setup_driver()
+
                 self.driver.get(page_url)
                 
                 # Wait for page to load
@@ -210,15 +236,21 @@ class BazarakiScraper:
                     break
                 
                 print(f"Found {len(listings)} listings on page {page}")
+                page_added = 0
                 
                 for listing in listings:
                     # Stop if we've reached max_listings
                     if max_listings and len(properties) >= max_listings:
                         break
+
+                    # Stop if we've reached per-page listing cap
+                    if max_listings_per_page and page_added >= max_listings_per_page:
+                        break
                     
                     property_data = self._parse_listing(listing)
                     if property_data:
                         properties.append(property_data)
+                        page_added += 1
                         
                         # Upload immediately if database connection is provided
                         if db_connection:

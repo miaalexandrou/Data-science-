@@ -1,0 +1,17 @@
+{
+  "status": "running",
+  "city": "starting",
+  "page": 0,
+  "total_collected": 0,
+  "city_stats": {
+    "listings_collected": 0,
+    "db_insert_success": 0,
+    "db_insert_failed": 0,
+    "pages_processed": 0,
+    "pages_skipped": 0,
+    "page_retries_used": 0,
+    "last_page_seen": 0
+  },
+  "note": "Run started",
+  "updated_at": "2026-04-01 12:31:57"
+}

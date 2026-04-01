@@ -23,6 +23,7 @@ import random
 import os
 import sys
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Allow importing sibling package: src/database/db_connection.py
@@ -32,6 +33,11 @@ if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
 from database.db_connection import DBConnection
+
+
+# Number of parallel Selenium page workers per location.
+# Set to 1 for sequential scraping, or 2-4 for parallel pages.
+PAGE_WORKERS_PER_LOCATION = 6
 
 
 # ==================== MAIN FUNCTION ====================
@@ -49,12 +55,17 @@ def main():
     print(f"\nSelected cities: {', '.join([c.capitalize() for c in selected_cities])}")
 
     max_pages, max_listings, max_listings_per_page, page_label = _prompt_page_settings()
+    manual_start_page = _prompt_start_page()
     
     print(f"Will scrape: {page_label} per city")
+    print(f"Start page: {manual_start_page}")
     print("\nStarting scrape...\n")
     
     # Initialize scraper and database connection
-    scraper = BazarakiScraper()
+    scraper = BazarakiScraper(
+        page_workers=PAGE_WORKERS_PER_LOCATION,
+        enable_page_parallel=(PAGE_WORKERS_PER_LOCATION > 1),
+    )
     db = DBConnection()
     all_properties = []
     city_reports = {}
@@ -90,9 +101,9 @@ def main():
                 print(f"Skipping {city} (already completed before checkpoint)")
                 continue
 
-            start_page = 1
+            start_page = manual_start_page
             start_listing_index = 0
-            if resume_city_index != -1 and idx == resume_city_index:
+            if manual_start_page == 1 and resume_city_index != -1 and idx == resume_city_index:
                 start_page = max(1, int(checkpoint.get('page', 1)))
                 start_listing_index = max(0, int(checkpoint.get('listing_index', 0)))
 
@@ -250,15 +261,43 @@ def _prompt_page_settings() -> tuple[int, Optional[int], Optional[int], str]:
         return max_pages, max_listings, max_listings_per_page, page_label
 
 
+def _prompt_start_page() -> int:
+    """Prompt user for a custom start page."""
+    while True:
+        raw = input("\nStart from which page? (press Enter for 1): ").strip()
+        if raw == '':
+            return 1
+        try:
+            page = int(raw)
+            if page < 1:
+                print("Please enter a page number >= 1.")
+                continue
+            return page
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
 # ==================== BAZARAKI SCRAPER CLASS ====================
 
 class BazarakiScraper:
     """Web scraper for Bazaraki.com real estate listings using Selenium"""
     
-    def __init__(self):
+    def __init__(
+        self,
+        enable_checkpoint: bool = True,
+        enable_progress: bool = True,
+        enable_process_cleanup: bool = True,
+        enable_page_parallel: bool = True,
+        page_workers: int = 4,
+    ):
         self.base_url = "https://www.bazaraki.com"
         self.properties_url = f"{self.base_url}/real-estate-for-sale/houses/"
         self.driver = None
+        self.enable_checkpoint = enable_checkpoint
+        self.enable_progress = enable_progress
+        self.enable_process_cleanup = enable_process_cleanup
+        self.enable_page_parallel = enable_page_parallel
+        self.page_workers = max(1, page_workers)
         self.checkpoint_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_checkpoint.json')
         self.progress_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_progress_report.json')
         self.final_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_final_report.json')
@@ -301,6 +340,23 @@ class BazarakiScraper:
         if city:
             district = self.city_mapping.get(city.lower(), city.lower())
             url = f"{self.properties_url}{district}/"
+
+        use_page_parallel = (
+            self.enable_page_parallel
+            and self.page_workers > 1
+            and (max_pages - start_page + 1) > 1
+            and start_listing_index == 0
+            and max_listings is None
+        )
+
+        if use_page_parallel:
+            return self._get_property_listings_parallel_pages(
+                city=city,
+                url=url,
+                start_page=start_page,
+                max_pages=max_pages,
+                max_listings_per_page=max_listings_per_page,
+            )
             
         print(f"Starting to scrape Bazaraki: {url}")
         
@@ -424,6 +480,96 @@ class BazarakiScraper:
         self.last_city_stats = stats
         print(f"Total properties scraped: {len(properties)}")
         return properties
+
+    def _get_property_listings_parallel_pages(
+        self,
+        city: Optional[str],
+        url: str,
+        start_page: int,
+        max_pages: int,
+        max_listings_per_page: Optional[int],
+    ) -> List[Dict]:
+        """Scrape pages in parallel using multiple isolated Selenium instances."""
+        pages = list(range(start_page, max_pages + 1))
+        max_workers = min(self.page_workers, len(pages))
+        properties: List[Dict] = []
+        stats = {
+            'pages_processed': 0,
+            'pages_skipped': 0,
+            'page_retries_used': 0,
+            'listings_collected': 0,
+            'db_insert_success': 0,
+            'db_insert_failed': 0,
+            'last_page_seen': 0,
+        }
+
+        print(f"Starting to scrape Bazaraki with parallel page workers ({max_workers}): {url}")
+
+        def _run_single_page(page: int):
+            worker_scraper = BazarakiScraper(
+                enable_checkpoint=False,
+                enable_progress=False,
+                enable_process_cleanup=False,
+                enable_page_parallel=False,
+                page_workers=1,
+            )
+            worker_db = DBConnection()
+            try:
+                worker_db.connect()
+                page_properties = worker_scraper.get_property_listings(
+                    city=city,
+                    max_pages=page,
+                    max_listings=None,
+                    max_listings_per_page=max_listings_per_page,
+                    start_page=page,
+                    start_listing_index=0,
+                    db_connection=worker_db,
+                )
+                return page, page_properties, worker_scraper.last_city_stats or {}, None
+            except Exception as e:
+                return page, [], {}, str(e)
+            finally:
+                worker_db.disconnect()
+                worker_scraper.close_driver()
+
+        completed_pages = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_page = {executor.submit(_run_single_page, page): page for page in pages}
+            for future in as_completed(future_to_page):
+                page = future_to_page[future]
+                try:
+                    _, page_properties, page_stats, page_error = future.result()
+                except Exception as e:
+                    page_properties, page_stats, page_error = [], {}, str(e)
+
+                completed_pages += 1
+                stats['last_page_seen'] = max(stats['last_page_seen'], page)
+
+                if page_error:
+                    stats['pages_skipped'] += 1
+                    print(f"Page {page} failed in parallel worker: {page_error}")
+                else:
+                    properties.extend(page_properties)
+                    stats['pages_processed'] += page_stats.get('pages_processed', 0)
+                    stats['pages_skipped'] += page_stats.get('pages_skipped', 0)
+                    stats['page_retries_used'] += page_stats.get('page_retries_used', 0)
+                    stats['listings_collected'] += page_stats.get('listings_collected', len(page_properties))
+                    stats['db_insert_success'] += page_stats.get('db_insert_success', 0)
+                    stats['db_insert_failed'] += page_stats.get('db_insert_failed', 0)
+
+                if completed_pages % 5 == 0:
+                    self.write_progress_report(
+                        status='running',
+                        city=city or 'unknown',
+                        page=stats['last_page_seen'],
+                        city_stats=stats,
+                        total_collected=len(properties),
+                        note='Parallel page progress update',
+                    )
+
+        self.last_city_stats = stats
+        print(f"Total properties scraped: {len(properties)}")
+        return properties
     
     def _setup_driver(self):
         """Initialize Chrome WebDriver with stealth options"""
@@ -445,7 +591,8 @@ class BazarakiScraper:
         last_error = None
         for attempt in range(1, 4):
             try:
-                self._cleanup_stale_driver_processes()
+                if self.enable_process_cleanup and attempt == 1:
+                    self._cleanup_stale_driver_processes()
                 if attempt < 3:
                     # Primary path: webdriver_manager cached driver
                     service = Service(ChromeDriverManager().install())
@@ -484,6 +631,8 @@ class BazarakiScraper:
     def _cleanup_stale_driver_processes(self):
         """Best-effort cleanup for stale chromedriver processes before startup."""
         try:
+            if not self.enable_process_cleanup:
+                return
             subprocess.run(
                 ["pkill", "-f", "chromedriver.*--port="],
                 check=False,
@@ -496,6 +645,8 @@ class BazarakiScraper:
     def load_checkpoint(self) -> Optional[Dict]:
         """Load checkpoint if available."""
         try:
+            if not self.enable_checkpoint:
+                return None
             if not os.path.exists(self.checkpoint_file):
                 return None
             with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
@@ -506,6 +657,8 @@ class BazarakiScraper:
     def save_checkpoint(self, city: str, page: int, listing_index: int):
         """Persist checkpoint for resume after crashes."""
         try:
+            if not self.enable_checkpoint:
+                return
             checkpoint_dir = os.path.dirname(self.checkpoint_file)
             os.makedirs(checkpoint_dir, exist_ok=True)
             payload = {
@@ -522,6 +675,8 @@ class BazarakiScraper:
     def clear_checkpoint(self):
         """Remove checkpoint after successful run completion."""
         try:
+            if not self.enable_checkpoint:
+                return
             if os.path.exists(self.checkpoint_file):
                 os.remove(self.checkpoint_file)
         except Exception as e:
@@ -530,6 +685,8 @@ class BazarakiScraper:
     def write_progress_report(self, status: str, city: str, page: int, city_stats: Dict, total_collected: int, note: str = ''):
         """Write a small JSON progress file for external monitoring."""
         try:
+            if not self.enable_progress:
+                return
             report_dir = os.path.dirname(self.progress_report_file)
             os.makedirs(report_dir, exist_ok=True)
             payload = {

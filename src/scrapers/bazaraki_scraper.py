@@ -39,6 +39,7 @@ from database.db_connection import DBConnection
 def main():
     """Main execution function with user input for locations"""
     available_cities = ['nicosia', 'limassol', 'larnaka', 'paphos']
+    run_started_at = datetime.now()
 
     print("=" * 60)
     print("BAZARAKI PROPERTY SCRAPER")
@@ -56,6 +57,7 @@ def main():
     scraper = BazarakiScraper()
     db = DBConnection()
     all_properties = []
+    city_reports = {}
     checkpoint = scraper.load_checkpoint()
     resume_city_index = -1
     if checkpoint and checkpoint.get('city') in selected_cities:
@@ -68,6 +70,15 @@ def main():
     try:
         # Open database connection for uploading during scraping
         db.connect()
+
+        scraper.write_progress_report(
+            status='running',
+            city='starting',
+            page=0,
+            city_stats={},
+            total_collected=0,
+            note='Run started',
+        )
         
         # Scrape selected cities
         for idx, city in enumerate(selected_cities):
@@ -100,11 +111,29 @@ def main():
             all_properties.extend(properties)
 
             city_stats = scraper.last_city_stats or {}
+            city_reports[city] = {
+                'listings_collected': city_stats.get('listings_collected', len(properties)),
+                'db_insert_success': city_stats.get('db_insert_success', 0),
+                'db_insert_failed': city_stats.get('db_insert_failed', 0),
+                'pages_processed': city_stats.get('pages_processed', 0),
+                'pages_skipped': city_stats.get('pages_skipped', 0),
+                'page_retries_used': city_stats.get('page_retries_used', 0),
+                'last_page_seen': city_stats.get('last_page_seen', 0),
+            }
             print(f"\nLocation summary for {city.capitalize()}:")
             print(f"  Listings collected: {city_stats.get('listings_collected', len(properties))}")
             print(f"  Pages processed: {city_stats.get('pages_processed', 0)}")
             print(f"  Pages skipped after retries: {city_stats.get('pages_skipped', 0)}")
             print(f"  Page retries used: {city_stats.get('page_retries_used', 0)}")
+
+            scraper.write_progress_report(
+                status='running',
+                city=city,
+                page=city_stats.get('last_page_seen', 0),
+                city_stats=city_stats,
+                total_collected=len(all_properties),
+                note=f"Completed city {city}",
+            )
 
             # Move checkpoint to next city boundary after successful city loop.
             scraper.save_checkpoint(city=city, page=max_pages + 1, listing_index=0)
@@ -113,6 +142,22 @@ def main():
             time.sleep(0.05)
 
         scraper.clear_checkpoint()
+        scraper.write_final_report(
+            status='completed',
+            selected_cities=selected_cities,
+            city_reports=city_reports,
+            total_collected=len(all_properties),
+            started_at=run_started_at,
+            note='Run completed successfully',
+        )
+        scraper.write_progress_report(
+            status='completed',
+            city='all',
+            page=0,
+            city_stats={},
+            total_collected=len(all_properties),
+            note='Run completed successfully',
+        )
         
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
@@ -120,6 +165,22 @@ def main():
         print("JSON export disabled (database-only mode)")
         print(f"{'='*60}")
     except Exception as e:
+        scraper.write_final_report(
+            status='error',
+            selected_cities=selected_cities,
+            city_reports=city_reports,
+            total_collected=len(all_properties),
+            started_at=run_started_at,
+            note=f'Run failed: {e}',
+        )
+        scraper.write_progress_report(
+            status='error',
+            city='unknown',
+            page=0,
+            city_stats=scraper.last_city_stats or {},
+            total_collected=len(all_properties),
+            note=f'Run failed: {e}',
+        )
         print(f"Error during scraping: {e}")
     finally:
         # Clean up: close database connection and driver
@@ -199,6 +260,8 @@ class BazarakiScraper:
         self.properties_url = f"{self.base_url}/real-estate-for-sale/houses/"
         self.driver = None
         self.checkpoint_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_checkpoint.json')
+        self.progress_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_progress_report.json')
+        self.final_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_final_report.json')
         self.max_page_retries = 3
         self.last_city_stats = None
         self._setup_driver()
@@ -228,6 +291,9 @@ class BazarakiScraper:
             'pages_skipped': 0,
             'page_retries_used': 0,
             'listings_collected': 0,
+            'db_insert_success': 0,
+            'db_insert_failed': 0,
+            'last_page_seen': 0,
         }
         
         # Build URL with filters
@@ -241,6 +307,7 @@ class BazarakiScraper:
         for page in range(start_page, max_pages + 1):
             page_url = f"{url}?page={page}" if page > 1 else url
             print(f"Scraping page {page}...")
+            stats['last_page_seen'] = page
 
             page_loaded = False
             listings = []
@@ -324,10 +391,13 @@ class BazarakiScraper:
                         try:
                             inserted = db_connection.insert_property(property_data)
                             if inserted:
+                                stats['db_insert_success'] += 1
                                 print(f"    ✓ Uploaded to database: {property_data.get('external_id')}")
                             else:
+                                stats['db_insert_failed'] += 1
                                 print(f"    ✗ Not inserted (DB error): {property_data.get('external_id')}")
                         except Exception as db_error:
+                            stats['db_insert_failed'] += 1
                             print(f"    ✗ Failed to upload: {db_error}")
 
             # Stop if we've reached max_listings
@@ -336,6 +406,17 @@ class BazarakiScraper:
 
             # Mark next page as resume point after finishing this page.
             self.save_checkpoint(city=city or '', page=page + 1, listing_index=0)
+
+            # Update lightweight progress report every 5 pages.
+            if page % 5 == 0:
+                self.write_progress_report(
+                    status='running',
+                    city=city or 'unknown',
+                    page=page,
+                    city_stats=stats,
+                    total_collected=len(properties),
+                    note='Periodic update (every 5 pages)',
+                )
 
             # No delay between pages
             time.sleep(0.05)
@@ -445,6 +526,71 @@ class BazarakiScraper:
                 os.remove(self.checkpoint_file)
         except Exception as e:
             print(f"Warning: failed to clear checkpoint: {e}")
+
+    def write_progress_report(self, status: str, city: str, page: int, city_stats: Dict, total_collected: int, note: str = ''):
+        """Write a small JSON progress file for external monitoring."""
+        try:
+            report_dir = os.path.dirname(self.progress_report_file)
+            os.makedirs(report_dir, exist_ok=True)
+            payload = {
+                'status': status,
+                'city': city,
+                'page': page,
+                'total_collected': total_collected,
+                'city_stats': {
+                    'listings_collected': city_stats.get('listings_collected', 0),
+                    'db_insert_success': city_stats.get('db_insert_success', 0),
+                    'db_insert_failed': city_stats.get('db_insert_failed', 0),
+                    'pages_processed': city_stats.get('pages_processed', 0),
+                    'pages_skipped': city_stats.get('pages_skipped', 0),
+                    'page_retries_used': city_stats.get('page_retries_used', 0),
+                    'last_page_seen': city_stats.get('last_page_seen', page),
+                },
+                'note': note,
+                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            with open(self.progress_report_file, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Warning: failed to write progress report: {e}")
+
+    def write_final_report(
+        self,
+        status: str,
+        selected_cities: List[str],
+        city_reports: Dict,
+        total_collected: int,
+        started_at: datetime,
+        note: str = '',
+    ):
+        """Write end-of-run JSON report with totals and per-location results."""
+        try:
+            report_dir = os.path.dirname(self.final_report_file)
+            os.makedirs(report_dir, exist_ok=True)
+            ended_at = datetime.now()
+
+            total_db_insert_success = sum(v.get('db_insert_success', 0) for v in city_reports.values())
+            total_db_insert_failed = sum(v.get('db_insert_failed', 0) for v in city_reports.values())
+
+            payload = {
+                'status': status,
+                'selected_cities': selected_cities,
+                'totals': {
+                    'total_collected': total_collected,
+                    'total_db_insert_success': total_db_insert_success,
+                    'total_db_insert_failed': total_db_insert_failed,
+                },
+                'per_city': city_reports,
+                'started_at': started_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'ended_at': ended_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'duration_seconds': int((ended_at - started_at).total_seconds()),
+                'note': note,
+            }
+
+            with open(self.final_report_file, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Warning: failed to write final report: {e}")
     
     def close_driver(self):
         """Safely close the WebDriver"""

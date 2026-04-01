@@ -388,6 +388,15 @@ class BazarakiScraper:
 
                     soup = BeautifulSoup(self.driver.page_source, 'html.parser')
 
+                    extracted_max_page = self._extract_max_pagination_page(soup)
+                    if extracted_max_page and page > extracted_max_page:
+                        print(
+                            f"Page {page} exceeds detected max pagination ({extracted_max_page}). "
+                            "Stopping city scrape."
+                        )
+                        self.last_city_stats = stats
+                        return properties
+
                     # Desktop version: .advert containers
                     listings = soup.find_all('div', class_='advert')
 
@@ -490,6 +499,27 @@ class BazarakiScraper:
         max_listings_per_page: Optional[int],
     ) -> List[Dict]:
         """Scrape pages in parallel using multiple isolated Selenium instances."""
+        detected_max_page = self._detect_max_page_for_url(url, start_page)
+        if detected_max_page is not None:
+            if start_page > detected_max_page:
+                print(
+                    f"Start page {start_page} exceeds detected max pagination ({detected_max_page}). "
+                    "Nothing to scrape for this city."
+                )
+                self.last_city_stats = {
+                    'pages_processed': 0,
+                    'pages_skipped': 0,
+                    'page_retries_used': 0,
+                    'listings_collected': 0,
+                    'db_insert_success': 0,
+                    'db_insert_failed': 0,
+                    'last_page_seen': detected_max_page,
+                }
+                return []
+            if max_pages > detected_max_page:
+                print(f"Capping max pages to detected pagination max: {detected_max_page}")
+                max_pages = detected_max_page
+
         pages = list(range(start_page, max_pages + 1))
         max_workers = min(self.page_workers, len(pages))
         properties: List[Dict] = []
@@ -570,6 +600,42 @@ class BazarakiScraper:
         self.last_city_stats = stats
         print(f"Total properties scraped: {len(properties)}")
         return properties
+
+    def _detect_max_page_for_url(self, url: str, start_page: int) -> Optional[int]:
+        """Load one page and extract the maximum pagination number."""
+        try:
+            probe_page_url = f"{url}?page={start_page}" if start_page > 1 else url
+            self.close_driver()
+            self._setup_driver()
+            self.driver.get(probe_page_url)
+            time.sleep(1.5)
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            return self._extract_max_pagination_page(soup)
+        except Exception as e:
+            print(f"Warning: could not detect max pagination page: {e}")
+            return None
+
+    def _extract_max_pagination_page(self, soup: BeautifulSoup) -> Optional[int]:
+        """Extract max page number from pagination links/buttons in the HTML."""
+        max_page = None
+
+        # Collect values from href page params.
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            m = re.search(r'[?&]page=(\d+)', href)
+            if m:
+                p = int(m.group(1))
+                max_page = p if max_page is None else max(max_page, p)
+
+        # Collect visible pagination numbers.
+        for tag in soup.find_all(['a', 'button', 'span', 'li']):
+            text = (tag.get_text() or '').strip()
+            if text.isdigit():
+                p = int(text)
+                if 1 <= p <= 5000:
+                    max_page = p if max_page is None else max(max_page, p)
+
+        return max_page
     
     def _setup_driver(self):
         """Initialize Chrome WebDriver with stealth options"""

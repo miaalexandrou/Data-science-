@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import WebDriverException
 from selenium_stealth import stealth
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
@@ -21,6 +22,7 @@ import re
 import random
 import os
 import sys
+import subprocess
 
 
 # Allow importing sibling package: src/database/db_connection.py
@@ -54,39 +56,68 @@ def main():
     scraper = BazarakiScraper()
     db = DBConnection()
     all_properties = []
+    checkpoint = scraper.load_checkpoint()
+    resume_city_index = -1
+    if checkpoint and checkpoint.get('city') in selected_cities:
+        resume_city_index = selected_cities.index(checkpoint.get('city'))
+        print(
+            f"Resuming from checkpoint: city={checkpoint.get('city')}, "
+            f"page={checkpoint.get('page', 1)}, listing_index={checkpoint.get('listing_index', 0)}"
+        )
     
     try:
         # Open database connection for uploading during scraping
         db.connect()
         
         # Scrape selected cities
-        for city in selected_cities:
+        for idx, city in enumerate(selected_cities):
             print(f"\n{'='*60}")
             print(f"Scraping {city.upper()}")
             print(f"{'='*60}")
+
+            if resume_city_index != -1 and idx < resume_city_index:
+                print(f"Skipping {city} (already completed before checkpoint)")
+                continue
+
+            start_page = 1
+            start_listing_index = 0
+            if resume_city_index != -1 and idx == resume_city_index:
+                start_page = max(1, int(checkpoint.get('page', 1)))
+                start_listing_index = max(0, int(checkpoint.get('listing_index', 0)))
+
+            # Save city-level checkpoint so crashes between pages can still resume correctly.
+            scraper.save_checkpoint(city=city, page=start_page, listing_index=start_listing_index)
             
             properties = scraper.get_property_listings(
                 city=city,
                 max_pages=max_pages,
                 max_listings=max_listings,
                 max_listings_per_page=max_listings_per_page,
+                start_page=start_page,
+                start_listing_index=start_listing_index,
                 db_connection=db,
             )
             all_properties.extend(properties)
+
+            city_stats = scraper.last_city_stats or {}
+            print(f"\nLocation summary for {city.capitalize()}:")
+            print(f"  Listings collected: {city_stats.get('listings_collected', len(properties))}")
+            print(f"  Pages processed: {city_stats.get('pages_processed', 0)}")
+            print(f"  Pages skipped after retries: {city_stats.get('pages_skipped', 0)}")
+            print(f"  Page retries used: {city_stats.get('page_retries_used', 0)}")
+
+            # Move checkpoint to next city boundary after successful city loop.
+            scraper.save_checkpoint(city=city, page=max_pages + 1, listing_index=0)
             
             # Minimal delay between cities
             time.sleep(0.05)
-        
-        # Save results
-        output_dir = 'data/raw'
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, 'bazaraki_properties.json')
-        scraper.save_to_json(all_properties, output_file)
+
+        scraper.clear_checkpoint()
         
         print(f"\n{'='*60}")
         print(f"Scraping completed!")
         print(f"Total properties collected: {len(all_properties)}")
-        print(f"Saved to: {output_file}")
+        print("JSON export disabled (database-only mode)")
         print(f"{'='*60}")
     except Exception as e:
         print(f"Error during scraping: {e}")
@@ -167,6 +198,9 @@ class BazarakiScraper:
         self.base_url = "https://www.bazaraki.com"
         self.properties_url = f"{self.base_url}/real-estate-for-sale/houses/"
         self.driver = None
+        self.checkpoint_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_checkpoint.json')
+        self.max_page_retries = 3
+        self.last_city_stats = None
         self._setup_driver()
         
         # City to district mapping for Bazaraki URLs
@@ -183,10 +217,18 @@ class BazarakiScraper:
         max_pages: int = 999,
         max_listings: int = None,
         max_listings_per_page: int = None,
+        start_page: int = 1,
+        start_listing_index: int = 0,
         db_connection: Optional['DBConnection'] = None,
     ) -> List[Dict]:
         """Fetch property listings from Bazaraki using Selenium"""
         properties = []
+        stats = {
+            'pages_processed': 0,
+            'pages_skipped': 0,
+            'page_retries_used': 0,
+            'listings_collected': 0,
+        }
         
         # Build URL with filters
         url = self.properties_url
@@ -196,122 +238,213 @@ class BazarakiScraper:
             
         print(f"Starting to scrape Bazaraki: {url}")
         
-        for page in range(1, max_pages + 1):
+        for page in range(start_page, max_pages + 1):
             page_url = f"{url}?page={page}" if page > 1 else url
             print(f"Scraping page {page}...")
-            
-            try:
-                # Rotate browser instance and user-agent for every paginated request.
-                self.close_driver()
-                self._setup_driver()
 
-                self.driver.get(page_url)
-                
-                # Wait for page to load
-                time.sleep(2)
-                
-                # Wait for listings to appear (try desktop then mobile selectors)
+            page_loaded = False
+            listings = []
+            for attempt in range(1, self.max_page_retries + 1):
                 try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.advert, [class*='CardGrid_container']"))
-                    )
-                except:
-                    pass
-                
-                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-                
-                # Desktop version: .advert containers
-                listings = soup.find_all('div', class_='advert')
-                
-                if not listings:
-                    # Mobile version: CardGrid containers
-                    listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
-                
-                if not listings:
-                    # Fallback: advert-grid containers
-                    listings = soup.find_all(class_=lambda x: x and 'advert-grid__item' in x)
-                
-                if not listings:
-                    print(f"No listings found on page {page}. Stopping...")
-                    break
-                
-                print(f"Found {len(listings)} listings on page {page}")
-                page_added = 0
-                
-                for listing in listings:
-                    # Stop if we've reached max_listings
-                    if max_listings and len(properties) >= max_listings:
-                        break
+                    # Rotate browser instance and user-agent for every paginated request.
+                    self.close_driver()
+                    self._setup_driver()
 
-                    # Stop if we've reached per-page listing cap
-                    if max_listings_per_page and page_added >= max_listings_per_page:
-                        break
-                    
-                    property_data = self._parse_listing(listing)
-                    if property_data:
-                        properties.append(property_data)
-                        page_added += 1
-                        
-                        # Upload immediately if database connection is provided
-                        if db_connection:
-                            try:
-                                inserted = db_connection.insert_property(property_data)
-                                if inserted:
-                                    print(f"    ✓ Uploaded to database: {property_data.get('external_id')}")
-                                else:
-                                    print(f"    ✗ Not inserted (DB error): {property_data.get('external_id')}")
-                            except Exception as db_error:
-                                print(f"    ✗ Failed to upload: {db_error}")
-                
+                    self.driver.get(page_url)
+
+                    # Wait for page to load
+                    time.sleep(2)
+
+                    # Wait for listings to appear (try desktop then mobile selectors)
+                    try:
+                        WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.advert, [class*='CardGrid_container']"))
+                        )
+                    except:
+                        pass
+
+                    soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+
+                    # Desktop version: .advert containers
+                    listings = soup.find_all('div', class_='advert')
+
+                    if not listings:
+                        # Mobile version: CardGrid containers
+                        listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
+
+                    if not listings:
+                        # Fallback: advert-grid containers
+                        listings = soup.find_all(class_=lambda x: x and 'advert-grid__item' in x)
+
+                    page_loaded = True
+                    break
+                except Exception as e:
+                    wait_time = attempt * 3
+                    print(f"Error fetching page {page} (attempt {attempt}/{self.max_page_retries}): {e}")
+                    stats['page_retries_used'] += 1
+                    time.sleep(wait_time)
+
+            if not page_loaded:
+                print(f"Skipping page {page} after {self.max_page_retries} failed attempts")
+                stats['pages_skipped'] += 1
+                continue
+
+            if not listings:
+                print(f"No listings found on page {page}. Stopping...")
+                break
+
+            print(f"Found {len(listings)} listings on page {page}")
+            stats['pages_processed'] += 1
+            page_added = 0
+
+            current_start_index = start_listing_index if page == start_page else 0
+            for listing_idx, listing in enumerate(listings):
+                if listing_idx < current_start_index:
+                    continue
+
                 # Stop if we've reached max_listings
                 if max_listings and len(properties) >= max_listings:
                     break
-                
-                # No delay between pages
-                time.sleep(0.05)
-                
-            except Exception as e:
-                print(f"Error fetching page {page}: {e}")
+
+                # Stop if we've reached per-page listing cap
+                if max_listings_per_page and page_added >= max_listings_per_page:
+                    break
+
+                property_data = self._parse_listing(listing)
+                if property_data:
+                    properties.append(property_data)
+                    page_added += 1
+                    stats['listings_collected'] += 1
+
+                    # Save checkpoint after each successful listing parse.
+                    self.save_checkpoint(city=city or '', page=page, listing_index=listing_idx + 1)
+
+                    # Upload immediately if database connection is provided
+                    if db_connection:
+                        try:
+                            inserted = db_connection.insert_property(property_data)
+                            if inserted:
+                                print(f"    ✓ Uploaded to database: {property_data.get('external_id')}")
+                            else:
+                                print(f"    ✗ Not inserted (DB error): {property_data.get('external_id')}")
+                        except Exception as db_error:
+                            print(f"    ✗ Failed to upload: {db_error}")
+
+            # Stop if we've reached max_listings
+            if max_listings and len(properties) >= max_listings:
                 break
+
+            # Mark next page as resume point after finishing this page.
+            self.save_checkpoint(city=city or '', page=page + 1, listing_index=0)
+
+            # No delay between pages
+            time.sleep(0.05)
         
+        self.last_city_stats = stats
         print(f"Total properties scraped: {len(properties)}")
         return properties
     
     def _setup_driver(self):
         """Initialize Chrome WebDriver with stealth options"""
+        ua = UserAgent()
+        self._user_agent = ua.random
+        chrome_options = Options()
+        chrome_options.add_argument(f"--user-agent={self._user_agent}")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+
+        # Disable image loading via preferences
+        prefs = {"profile.managed_default_content_settings.images": 2}
+        chrome_options.add_experimental_option("prefs", prefs)
+
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                self._cleanup_stale_driver_processes()
+                if attempt < 3:
+                    # Primary path: webdriver_manager cached driver
+                    service = Service(ChromeDriverManager().install())
+                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                else:
+                    # Fallback path: let Selenium Manager resolve a compatible driver
+                    self.driver = webdriver.Chrome(options=chrome_options)
+
+                stealth(self.driver,
+                        user_agent=self._user_agent,
+                        languages=["en-US", "en"],
+                        vendor="Google Inc.",
+                        platform="Win32",
+                        webgl_vendor="Intel Inc.",
+                        renderer="Intel Iris OpenGL Engine",
+                        fix_hairline=False)
+
+                print("WebDriver ready")
+                return
+            except WebDriverException as e:
+                last_error = e
+                self.close_driver()
+                wait_time = attempt * 2
+                print(f"WebDriver init attempt {attempt}/3 failed: {e}")
+                time.sleep(wait_time)
+            except Exception as e:
+                last_error = e
+                self.close_driver()
+                wait_time = attempt * 2
+                print(f"WebDriver init attempt {attempt}/3 failed: {e}")
+                time.sleep(wait_time)
+
+        print(f"Error initializing WebDriver after retries: {last_error}")
+        raise last_error
+
+    def _cleanup_stale_driver_processes(self):
+        """Best-effort cleanup for stale chromedriver processes before startup."""
         try:
-            ua = UserAgent()
-            self._user_agent = ua.random
-            chrome_options = Options()
-            chrome_options.add_argument(f"--user-agent={self._user_agent}")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            # Disable image loading via preferences
-            prefs = {"profile.managed_default_content_settings.images": 2}
-            chrome_options.add_experimental_option("prefs", prefs)
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            # Apply selenium-stealth
-            stealth(self.driver,
-                    user_agent=self._user_agent,
-                    languages=["en-US", "en"],
-                    vendor="Google Inc.",
-                    platform="Win32",
-                    webgl_vendor="Intel Inc.",
-                    renderer="Intel Iris OpenGL Engine",
-                    fix_hairline=False)
-            
-            print("WebDriver ready")
+            subprocess.run(
+                ["pkill", "-f", "chromedriver.*--port="],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+    def load_checkpoint(self) -> Optional[Dict]:
+        """Load checkpoint if available."""
+        try:
+            if not os.path.exists(self.checkpoint_file):
+                return None
+            with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def save_checkpoint(self, city: str, page: int, listing_index: int):
+        """Persist checkpoint for resume after crashes."""
+        try:
+            checkpoint_dir = os.path.dirname(self.checkpoint_file)
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            payload = {
+                'city': city,
+                'page': page,
+                'listing_index': listing_index,
+                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Error initializing WebDriver: {e}")
-            raise
+            print(f"Warning: failed to save checkpoint: {e}")
+
+    def clear_checkpoint(self):
+        """Remove checkpoint after successful run completion."""
+        try:
+            if os.path.exists(self.checkpoint_file):
+                os.remove(self.checkpoint_file)
+        except Exception as e:
+            print(f"Warning: failed to clear checkpoint: {e}")
     
     def close_driver(self):
         """Safely close the WebDriver"""
@@ -457,27 +590,41 @@ class BazarakiScraper:
             return None
     
     def _fetch_property_details(self, property_url: str) -> Optional[Dict]:
-        """Fetch detail page using a separate Chrome instance to avoid Cloudflare"""
+        """Fetch detail page using an isolated browser instance"""
         detail_driver = None
         try:
-            # Create a separate browser instance for the detail page
-            ua = UserAgent()
-            detail_ua = ua.random
-            chrome_options = Options()
-            chrome_options.add_argument(f"--user-agent={detail_ua}")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            prefs = {"profile.managed_default_content_settings.images": 2}
-            chrome_options.add_experimental_option("prefs", prefs)
-            
-            service = Service(ChromeDriverManager().install())
-            detail_driver = webdriver.Chrome(service=service, options=chrome_options)
-            
+            detail_ua = UserAgent().random
+            detail_options = Options()
+            detail_options.add_argument(f"--user-agent={detail_ua}")
+            detail_options.add_argument("--no-sandbox")
+            detail_options.add_argument("--disable-dev-shm-usage")
+            detail_options.add_argument("--disable-blink-features=AutomationControlled")
+            detail_options.add_argument("--disable-gpu")
+            detail_options.add_argument("--headless=new")
+            detail_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            detail_options.add_experimental_option('useAutomationExtension', False)
+            detail_prefs = {"profile.managed_default_content_settings.images": 2}
+            detail_options.add_experimental_option("prefs", detail_prefs)
+
+            # Retry service startup to avoid transient chromedriver connection failures.
+            last_error = None
+            for attempt in range(1, 4):
+                try:
+                    if attempt < 3:
+                        detail_service = Service(ChromeDriverManager().install())
+                        detail_driver = webdriver.Chrome(service=detail_service, options=detail_options)
+                    else:
+                        detail_driver = webdriver.Chrome(options=detail_options)
+                    break
+                except Exception as e:
+                    last_error = e
+                    wait_time = attempt * 2
+                    print(f"    Detail driver init attempt {attempt}/3 failed: {e}")
+                    time.sleep(wait_time)
+
+            if not detail_driver:
+                raise last_error if last_error else RuntimeError("Failed to initialize detail driver")
+
             stealth(detail_driver,
                     user_agent=detail_ua,
                     languages=["en-US", "en"],
@@ -486,7 +633,7 @@ class BazarakiScraper:
                     webgl_vendor="Intel Inc.",
                     renderer="Intel Iris OpenGL Engine",
                     fix_hairline=False)
-            
+
             detail_driver.get(property_url)
             time.sleep(2.5)
             

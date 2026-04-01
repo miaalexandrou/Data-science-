@@ -23,6 +23,7 @@ import random
 import os
 import sys
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -37,7 +38,18 @@ from database.db_connection import DBConnection
 
 # Number of parallel Selenium page workers per location.
 # Set to 1 for sequential scraping, or 2-4 for parallel pages.
-PAGE_WORKERS_PER_LOCATION = 6
+PAGE_WORKERS_PER_LOCATION = 8
+
+# Delay (seconds) between launching each parallel page worker.
+# Helps reduce CPU/RAM spikes from simultaneous ChromeDriver startups.
+WORKER_STARTUP_STAGGER_SECONDS = 1.5
+
+# Run listing page browsers in headless mode to reduce CPU usage.
+LISTING_BROWSERS_HEADLESS = True
+
+# Limit simultaneous detail-page browser instances across all workers.
+DETAIL_DRIVER_CONCURRENCY_LIMIT = 6
+DETAIL_DRIVER_SEMAPHORE = threading.Semaphore(DETAIL_DRIVER_CONCURRENCY_LIMIT)
 
 
 # ==================== MAIN FUNCTION ====================
@@ -65,6 +77,7 @@ def main():
     scraper = BazarakiScraper(
         page_workers=PAGE_WORKERS_PER_LOCATION,
         enable_page_parallel=(PAGE_WORKERS_PER_LOCATION > 1),
+        worker_startup_stagger_seconds=WORKER_STARTUP_STAGGER_SECONDS,
     )
     db = DBConnection()
     all_properties = []
@@ -289,6 +302,7 @@ class BazarakiScraper:
         enable_process_cleanup: bool = True,
         enable_page_parallel: bool = True,
         page_workers: int = 4,
+        worker_startup_stagger_seconds: float = 0.0,
     ):
         self.base_url = "https://www.bazaraki.com"
         self.properties_url = f"{self.base_url}/real-estate-for-sale/houses/"
@@ -298,6 +312,7 @@ class BazarakiScraper:
         self.enable_process_cleanup = enable_process_cleanup
         self.enable_page_parallel = enable_page_parallel
         self.page_workers = max(1, page_workers)
+        self.worker_startup_stagger_seconds = max(0.0, float(worker_startup_stagger_seconds))
         self.checkpoint_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_checkpoint.json')
         self.progress_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_progress_report.json')
         self.final_report_file = os.path.join(CURRENT_DIR, 'data', 'raw', 'bazaraki_final_report.json')
@@ -542,6 +557,7 @@ class BazarakiScraper:
                 enable_process_cleanup=False,
                 enable_page_parallel=False,
                 page_workers=1,
+                worker_startup_stagger_seconds=0.0,
             )
             worker_db = DBConnection()
             try:
@@ -564,7 +580,12 @@ class BazarakiScraper:
 
         completed_pages = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_page = {executor.submit(_run_single_page, page): page for page in pages}
+            future_to_page = {}
+            for i, page in enumerate(pages):
+                if i > 0 and self.worker_startup_stagger_seconds > 0:
+                    time.sleep(self.worker_startup_stagger_seconds)
+                future = executor.submit(_run_single_page, page)
+                future_to_page[future] = page
             for future in as_completed(future_to_page):
                 page = future_to_page[future]
                 try:
@@ -647,6 +668,8 @@ class BazarakiScraper:
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_argument("--disable-gpu")
+        if LISTING_BROWSERS_HEADLESS:
+            chrome_options.add_argument("--headless=new")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
 
@@ -962,49 +985,50 @@ class BazarakiScraper:
         """Fetch detail page using an isolated browser instance"""
         detail_driver = None
         try:
-            detail_ua = UserAgent().random
-            detail_options = Options()
-            detail_options.add_argument(f"--user-agent={detail_ua}")
-            detail_options.add_argument("--no-sandbox")
-            detail_options.add_argument("--disable-dev-shm-usage")
-            detail_options.add_argument("--disable-blink-features=AutomationControlled")
-            detail_options.add_argument("--disable-gpu")
-            detail_options.add_argument("--headless=new")
-            detail_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            detail_options.add_experimental_option('useAutomationExtension', False)
-            detail_prefs = {"profile.managed_default_content_settings.images": 2}
-            detail_options.add_experimental_option("prefs", detail_prefs)
+            with DETAIL_DRIVER_SEMAPHORE:
+                detail_ua = UserAgent().random
+                detail_options = Options()
+                detail_options.add_argument(f"--user-agent={detail_ua}")
+                detail_options.add_argument("--no-sandbox")
+                detail_options.add_argument("--disable-dev-shm-usage")
+                detail_options.add_argument("--disable-blink-features=AutomationControlled")
+                detail_options.add_argument("--disable-gpu")
+                detail_options.add_argument("--headless=new")
+                detail_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                detail_options.add_experimental_option('useAutomationExtension', False)
+                detail_prefs = {"profile.managed_default_content_settings.images": 2}
+                detail_options.add_experimental_option("prefs", detail_prefs)
 
-            # Retry service startup to avoid transient chromedriver connection failures.
-            last_error = None
-            for attempt in range(1, 4):
-                try:
-                    if attempt < 3:
-                        detail_service = Service(ChromeDriverManager().install())
-                        detail_driver = webdriver.Chrome(service=detail_service, options=detail_options)
-                    else:
-                        detail_driver = webdriver.Chrome(options=detail_options)
-                    break
-                except Exception as e:
-                    last_error = e
-                    wait_time = attempt * 2
-                    print(f"    Detail driver init attempt {attempt}/3 failed: {e}")
-                    time.sleep(wait_time)
+                # Retry service startup to avoid transient chromedriver connection failures.
+                last_error = None
+                for attempt in range(1, 4):
+                    try:
+                        if attempt < 3:
+                            detail_service = Service(ChromeDriverManager().install())
+                            detail_driver = webdriver.Chrome(service=detail_service, options=detail_options)
+                        else:
+                            detail_driver = webdriver.Chrome(options=detail_options)
+                        break
+                    except Exception as e:
+                        last_error = e
+                        wait_time = attempt * 2
+                        print(f"    Detail driver init attempt {attempt}/3 failed: {e}")
+                        time.sleep(wait_time)
 
-            if not detail_driver:
-                raise last_error if last_error else RuntimeError("Failed to initialize detail driver")
+                if not detail_driver:
+                    raise last_error if last_error else RuntimeError("Failed to initialize detail driver")
 
-            stealth(detail_driver,
-                    user_agent=detail_ua,
-                    languages=["en-US", "en"],
-                    vendor="Google Inc.",
-                    platform="Win32",
-                    webgl_vendor="Intel Inc.",
-                    renderer="Intel Iris OpenGL Engine",
-                    fix_hairline=False)
+                stealth(detail_driver,
+                        user_agent=detail_ua,
+                        languages=["en-US", "en"],
+                        vendor="Google Inc.",
+                        platform="Win32",
+                        webgl_vendor="Intel Inc.",
+                        renderer="Intel Iris OpenGL Engine",
+                        fix_hairline=False)
 
-            detail_driver.get(property_url)
-            time.sleep(2.5)
+                detail_driver.get(property_url)
+                time.sleep(2.5)
             
             # Handle Cloudflare
             for _ in range(15):

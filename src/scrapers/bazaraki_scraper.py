@@ -38,7 +38,7 @@ from database.db_connection import DBConnection
 
 # Number of parallel Selenium page workers per location.
 # Set to 1 for sequential scraping, or 2-4 for parallel pages.
-PAGE_WORKERS_PER_LOCATION = 8
+PAGE_WORKERS_PER_LOCATION = 6
 
 # Delay (seconds) between launching each parallel page worker.
 # Helps reduce CPU/RAM spikes from simultaneous ChromeDriver startups.
@@ -56,7 +56,7 @@ DETAIL_DRIVER_SEMAPHORE = threading.Semaphore(DETAIL_DRIVER_CONCURRENCY_LIMIT)
 
 def main():
     """Main execution function with user input for locations"""
-    available_cities = ['nicosia', 'limassol', 'larnaka', 'paphos']
+    available_cities = ['nicosia', 'limassol', 'larnaka', 'paphos', 'famagousta']
     run_started_at = datetime.now()
 
     print("=" * 60)
@@ -325,7 +325,9 @@ class BazarakiScraper:
             'nicosia': 'lefkosia-district-nicosia',
             'limassol': 'lemesos-district-limassol',  # Corrected mapping
             'larnaka': 'larnaka-district-larnaca',
-            'paphos': 'pafos-district-paphos'
+            'paphos': 'pafos-district-paphos',
+            'famagousta': 'ammochostos-district',
+            'famagusta': 'ammochostos-district'
         }
     
     def get_property_listings(

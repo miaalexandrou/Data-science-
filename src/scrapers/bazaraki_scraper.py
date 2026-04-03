@@ -33,7 +33,7 @@ SRC_DIR = os.path.dirname(CURRENT_DIR)
 if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
-from database.db_connection import DBConnection
+from databaseconection.db_connection import DBConnection
 
 
 # Number of parallel Selenium page workers per location.

@@ -342,6 +342,7 @@ class BazarakiScraper:
     ) -> List[Dict]:
         """Fetch property listings from Bazaraki using Selenium"""
         properties = []
+        seen_external_ids: set[str] = set()
         stats = {
             'pages_processed': 0,
             'pages_skipped': 0,
@@ -398,7 +399,7 @@ class BazarakiScraper:
                     # Wait for listings to appear (try desktop then mobile selectors)
                     try:
                         WebDriverWait(self.driver, 10).until(
-                            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.advert, [class*='CardGrid_container']"))
+                            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.advert, [class*='CardGrid_item'], [class*='advert-grid__item']"))
                         )
                     except:
                         pass
@@ -418,8 +419,8 @@ class BazarakiScraper:
                     listings = soup.find_all('div', class_='advert')
 
                     if not listings:
-                        # Mobile version: CardGrid containers
-                        listings = soup.find_all(class_=lambda x: x and 'CardGrid_container' in x)
+                        # Mobile/grid version: target individual cards, not the grid container.
+                        listings = soup.select("[class*='CardGrid_item']")
 
                     if not listings:
                         # Fallback: advert-grid containers
@@ -445,6 +446,7 @@ class BazarakiScraper:
             print(f"Found {len(listings)} listings on page {page}")
             stats['pages_processed'] += 1
             page_added = 0
+            seen_page_ids: set[str] = set()
 
             current_start_index = start_listing_index if page == start_page else 0
             for listing_idx, listing in enumerate(listings):
@@ -461,9 +463,17 @@ class BazarakiScraper:
 
                 property_data = self._parse_listing(listing)
                 if property_data:
+                    ext_id = (property_data.get('external_id') or '').strip()
+                    if ext_id and (ext_id in seen_page_ids or ext_id in seen_external_ids):
+                        continue
+
                     properties.append(property_data)
                     page_added += 1
                     stats['listings_collected'] += 1
+
+                    if ext_id:
+                        seen_page_ids.add(ext_id)
+                        seen_external_ids.add(ext_id)
 
                     # Save checkpoint after each successful listing parse.
                     self.save_checkpoint(city=city or '', page=page, listing_index=listing_idx + 1)
@@ -602,11 +612,25 @@ class BazarakiScraper:
                     stats['pages_skipped'] += 1
                     print(f"Page {page} failed in parallel worker: {page_error}")
                 else:
-                    properties.extend(page_properties)
+                    existing_ids = {
+                        (p.get('external_id') or '').strip()
+                        for p in properties
+                        if (p.get('external_id') or '').strip()
+                    }
+                    unique_page_properties = []
+                    for prop in page_properties:
+                        ext_id = (prop.get('external_id') or '').strip()
+                        if ext_id and ext_id in existing_ids:
+                            continue
+                        unique_page_properties.append(prop)
+                        if ext_id:
+                            existing_ids.add(ext_id)
+
+                    properties.extend(unique_page_properties)
                     stats['pages_processed'] += page_stats.get('pages_processed', 0)
                     stats['pages_skipped'] += page_stats.get('pages_skipped', 0)
                     stats['page_retries_used'] += page_stats.get('page_retries_used', 0)
-                    stats['listings_collected'] += page_stats.get('listings_collected', len(page_properties))
+                    stats['listings_collected'] += len(unique_page_properties)
                     stats['db_insert_success'] += page_stats.get('db_insert_success', 0)
                     stats['db_insert_failed'] += page_stats.get('db_insert_failed', 0)
 
@@ -890,8 +914,10 @@ class BazarakiScraper:
             price = self._extract_price(price_text)
             
             # Extract property ID from URL if not from data-id
-            if not property_id:
-                property_id = self._extract_id_from_url(property_url)
+            # URL /adv/<id> is the canonical identifier; prefer it over data-id.
+            extracted_id = self._extract_id_from_url(property_url)
+            if extracted_id:
+                property_id = extracted_id
             
             # Extract location from place element or text
             city = ''

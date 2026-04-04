@@ -53,7 +53,7 @@ def fetch_data_from_source() -> List[Dict]:
         List of property records from the source database.
     """
     try:
-        requested_count = int(input("How many lines do you want to fetch from properties? (enter 1 for all) "))
+        requested_count = int(input("\n How many lines do you want to fetch from properties? (enter 1 for all) "))
     except ValueError:
         print("[FETCH] Invalid number entered.")
         return []
@@ -86,7 +86,6 @@ def clean_data(raw_data: List[Dict]) -> List[Dict]:
     """
     # Remove duplicate rows
     cleaned_data = deduplicate(raw_data)
-    
     # Handle null values
     cleaned_data = handle_nulls(cleaned_data)
     # Add data when possible 
@@ -218,6 +217,11 @@ def convert_pseudo_nulls_to_null(data: List[Dict]) -> List[Dict]:
 def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
     """ Apply safe imputations: price_per_sqm and optional grouped bathrooms."""
 
+    enable_targeted_imputations = 1  # Set to 0 to disable this function's imputations.
+    if enable_targeted_imputations == 0:
+        print("[IMPUTE] Targeted imputations disabled")
+        return [dict(row) for row in data]
+
     updated_rows: List[Dict] = [dict(row) for row in data]
 
     # Recompute price_per_sqm only when enough information exists.
@@ -226,6 +230,18 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
         property_area = row.get("property_area_sqm")
         if row.get("price_per_sqm") is None and price is not None and property_area not in (None, 0):
             row["price_per_sqm"] = round(float(price) / float(property_area), 3)
+
+    # Fill missing price from area and price_per_sqm when both exist.
+    prices_imputed = 0
+    for row in updated_rows:
+        if row.get("price") is not None:
+            continue
+        property_area = row.get("property_area_sqm")
+        price_per_sqm = row.get("price_per_sqm")
+        if property_area is None or price_per_sqm is None:
+            continue
+        row["price"] = round(float(property_area) * float(price_per_sqm), 2)
+        prices_imputed += 1
 
     # Optional bathrooms imputation by (property_type, bedrooms) group medians.
     grouped_bathrooms: Dict = {}
@@ -247,6 +263,7 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
             row["bathrooms"] = int(round(group_medians[group_key]))
             bathrooms_imputed += 1
 
+    print(f"[IMPUTE] Prices imputed: {prices_imputed}")
     print(f"[IMPUTE] Bathrooms imputed: {bathrooms_imputed}")
     return updated_rows
 

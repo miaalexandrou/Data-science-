@@ -224,16 +224,34 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
 
     updated_rows: List[Dict] = [dict(row) for row in data]
 
-    # Recompute price_per_sqm only when enough information exists.
-    for row in updated_rows:
+    """Recompute missing price_per_sqm from price and area when possible."""
+    recompute_price_per_sqm(updated_rows)
+
+    """Fill missing price from property_area_sqm and price_per_sqm."""
+    prices_imputed = impute_missing_prices(updated_rows)
+
+    """Detect bathroom outliers with IQR and impute missing/outlier values by median."""
+    bathrooms_imputed, bathrooms_outliers_fixed = fix_and_impute_bathrooms(updated_rows)
+
+    print(f"[IMPUTE] Prices imputed: {prices_imputed}")
+    print(f"[IMPUTE] Bathrooms imputed: {bathrooms_imputed}")
+    print(f"[IMPUTE] Bathrooms outliers fixed: {bathrooms_outliers_fixed}")
+    return updated_rows
+
+
+def recompute_price_per_sqm(rows: List[Dict]) -> None:
+    """Recompute missing price_per_sqm from price and area when possible."""
+    for row in rows:
         price = row.get("price")
         property_area = row.get("property_area_sqm")
         if row.get("price_per_sqm") is None and price is not None and property_area not in (None, 0):
             row["price_per_sqm"] = round(float(price) / float(property_area), 3)
 
-    # Fill missing price from area and price_per_sqm when both exist.
+
+def impute_missing_prices(rows: List[Dict]) -> int:
+    """Fill missing price from property_area_sqm and price_per_sqm."""
     prices_imputed = 0
-    for row in updated_rows:
+    for row in rows:
         if row.get("price") is not None:
             continue
         property_area = row.get("property_area_sqm")
@@ -242,10 +260,61 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
             continue
         row["price"] = round(float(property_area) * float(price_per_sqm), 2)
         prices_imputed += 1
+    return prices_imputed
 
-    # Optional bathrooms imputation by (property_type, bedrooms) group medians.
+
+def fix_and_impute_bathrooms(rows: List[Dict]) -> tuple[int, int]:
+    """Detect bathroom outliers with IQR and impute missing/outlier values by median."""
+    numeric_bathrooms = []
+    for row in rows:
+        bathrooms = row.get("bathrooms")
+        if bathrooms is None:
+            continue
+        try:
+            value = float(bathrooms)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            numeric_bathrooms.append(value)
+
+    def percentile(sorted_values: List[float], p: float) -> float:
+        if not sorted_values:
+            return 0.0
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+        position = (len(sorted_values) - 1) * p
+        lower_index = int(position)
+        upper_index = min(lower_index + 1, len(sorted_values) - 1)
+        fraction = position - lower_index
+        return sorted_values[lower_index] + (sorted_values[upper_index] - sorted_values[lower_index]) * fraction
+
+    lower_bound = 0.0
+    upper_bound = float("inf")
+    global_bathrooms_median = None
+    if numeric_bathrooms:
+        sorted_bathrooms = sorted(numeric_bathrooms)
+        q1 = percentile(sorted_bathrooms, 0.25)
+        q3 = percentile(sorted_bathrooms, 0.75)
+        iqr = q3 - q1
+        lower_bound = max(0.0, q1 - 1.5 * iqr)
+        upper_bound = q3 + 1.5 * iqr
+        global_bathrooms_median = median(sorted_bathrooms)
+
+    outlier_indices = set()
+    for idx, row in enumerate(rows):
+        bathrooms = row.get("bathrooms")
+        if bathrooms is None:
+            continue
+        try:
+            value = float(bathrooms)
+        except (TypeError, ValueError):
+            continue
+        if value < lower_bound or value > upper_bound:
+            row["bathrooms"] = None
+            outlier_indices.add(idx)
+
     grouped_bathrooms: Dict = {}
-    for row in updated_rows:
+    for row in rows:
         bathrooms = row.get("bathrooms")
         if bathrooms is None:
             continue
@@ -255,17 +324,23 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
     group_medians = {key: median(values) for key, values in grouped_bathrooms.items() if values}
 
     bathrooms_imputed = 0
-    for row in updated_rows:
+    bathrooms_outliers_fixed = 0
+    for idx, row in enumerate(rows):
         if row.get("bathrooms") is not None:
             continue
+
         group_key = (row.get("property_type"), row.get("bedrooms"))
-        if group_key in group_medians:
-            row["bathrooms"] = int(round(group_medians[group_key]))
+        replacement = group_medians.get(group_key, global_bathrooms_median)
+        if replacement is None:
+            continue
+
+        row["bathrooms"] = int(round(replacement))
+        if idx in outlier_indices:
+            bathrooms_outliers_fixed += 1
+        else:
             bathrooms_imputed += 1
 
-    print(f"[IMPUTE] Prices imputed: {prices_imputed}")
-    print(f"[IMPUTE] Bathrooms imputed: {bathrooms_imputed}")
-    return updated_rows
+    return bathrooms_imputed, bathrooms_outliers_fixed
 
 
 

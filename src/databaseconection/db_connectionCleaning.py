@@ -7,6 +7,7 @@ that match Database/db.yaml.
 
 import os
 import json
+import re
 import pymysql
 import pymysql.cursors
 from typing import Dict, List, Optional
@@ -100,6 +101,92 @@ class DBConnection:
             return True
         except pymysql.Error:
             return False
+
+    def commit(self) -> None:
+        """Commit current transaction."""
+        if not self.is_connected():
+            raise RuntimeError("[DB] Not connected. Call connect() first.")
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        """Rollback current transaction."""
+        if not self.is_connected():
+            raise RuntimeError("[DB] Not connected. Call connect() first.")
+        self._conn.rollback()
+
+    def _validate_table_name(self, table_name: str) -> str:
+        """Allow only simple safe table names to avoid SQL injection."""
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', table_name or ''):
+            raise ValueError(f"Invalid table name: {table_name}")
+        return table_name
+
+    def fetch_rows_with_missing_locations(
+        self,
+        table_name: str = "properties_processed",
+        max_rows: Optional[int] = None,
+    ) -> List[Dict]:
+        """Fetch rows where city/district/area is missing or unknown-like."""
+        if not self.is_connected():
+            raise RuntimeError("[DB] Not connected. Call connect() first.")
+
+        safe_table = self._validate_table_name(table_name)
+        query = f"""
+            SELECT id, url, city, district, area
+            FROM {safe_table}
+            WHERE
+                city IS NULL OR TRIM(city) = '' OR LOWER(TRIM(city)) IN ('unknown', 'n/a', 'na', 'none', 'null', '?', '??') OR
+                district IS NULL OR TRIM(district) = '' OR LOWER(TRIM(district)) IN ('unknown', 'n/a', 'na', 'none', 'null', '?', '??') OR
+                area IS NULL OR TRIM(area) = '' OR LOWER(TRIM(area)) IN ('unknown', 'n/a', 'na', 'none', 'null', '?', '??')
+            ORDER BY id ASC
+        """
+        params = ()
+        if max_rows and max_rows > 0:
+            query += " LIMIT %s"
+            params = (max_rows,)
+
+        with self._conn.cursor() as cursor:
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def update_location_fields_by_id(
+        self,
+        row_id: int,
+        city: Optional[str] = None,
+        district: Optional[str] = None,
+        area: Optional[str] = None,
+        table_name: str = "properties_processed",
+        commit: bool = False,
+    ) -> bool:
+        """Update provided non-null location fields for a specific row id."""
+        if not self.is_connected():
+            raise RuntimeError("[DB] Not connected. Call connect() first.")
+
+        safe_table = self._validate_table_name(table_name)
+        updates: Dict[str, str] = {}
+        if city is not None:
+            updates['city'] = city
+        if district is not None:
+            updates['district'] = district
+        if area is not None:
+            updates['area'] = area
+
+        if not updates:
+            return False
+
+        set_clause = ", ".join([f"`{k}` = %s" for k in updates.keys()])
+        sql = f"UPDATE {safe_table} SET {set_clause} WHERE id = %s"
+        params = tuple(updates.values()) + (row_id,)
+
+        try:
+            with self._conn.cursor() as cursor:
+                cursor.execute(sql, params)
+                affected = cursor.rowcount > 0
+            if commit:
+                self._conn.commit()
+            return affected
+        except pymysql.Error:
+            self._conn.rollback()
+            raise
 
     # ── insert helpers ────────────────────────────────────────────────────
     def insert_property(self, property_data: Dict) -> bool:

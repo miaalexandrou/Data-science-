@@ -34,6 +34,7 @@ if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
 from databaseconection.db_connection import DBConnection
+from databaseconection.db_connectionCleaning import DBConnection as DBConnectionCleaning
 
 
 # Number of parallel Selenium page workers per location.
@@ -62,6 +63,25 @@ def main():
     print("=" * 60)
     print("BAZARAKI PROPERTY SCRAPER")
     print("=" * 60)
+
+    run_mode = _prompt_run_mode()
+    if run_mode == 'fix_processed_locations':
+        print("\nRunning location backfill for properties_processed...\n")
+        stats = fix_missing_processed_locations(
+            max_rows=None,
+            batch_commit_size=1,
+            dry_run=False,
+            parallel_workers=PAGE_WORKERS_PER_LOCATION,
+        )
+        print("\n" + "=" * 60)
+        print("BACKFILL COMPLETED")
+        print("=" * 60)
+        print(f"Rows scanned: {stats.get('rows_scanned', 0)}")
+        print(f"Rows updated: {stats.get('rows_updated', 0)}")
+        print(f"Rows failed: {stats.get('rows_failed', 0)}")
+        print(f"Rows with no detail data: {stats.get('rows_with_no_detail_data', 0)}")
+        print("=" * 60)
+        return
 
     selected_cities = _prompt_selected_cities(available_cities)
     print(f"\nSelected cities: {', '.join([c.capitalize() for c in selected_cities])}")
@@ -288,6 +308,21 @@ def _prompt_start_page() -> int:
             return page
         except ValueError:
             print("Invalid input. Please enter a number.")
+
+
+def _prompt_run_mode() -> str:
+    """Prompt user for script mode at startup."""
+    print("\nChoose mode:")
+    print("  1. Scrape listings")
+    print("  2. Fix missing city/district/area in properties_processed")
+
+    while True:
+        choice = input("\nEnter your choice (1-2): ").strip()
+        if choice == '1':
+            return 'scrape'
+        if choice == '2':
+            return 'fix_processed_locations'
+        print("Invalid choice. Please enter 1 or 2.")
 
 
 # ==================== BAZARAKI SCRAPER CLASS ====================
@@ -1114,6 +1149,7 @@ class BazarakiScraper:
             # ---- FEATURES / PARAMETERS ----
             field_map = {
                 'Reference number': 'reference_number',
+                'Location': 'location_raw',
                 'Property area': 'property_area_sqm',
                 'Type': 'property_type',
                 'Parking': 'parking',
@@ -1245,8 +1281,37 @@ class BazarakiScraper:
                     items.append(item)
             
             detail_data['included'] = items
+        elif key == 'location_raw':
+            city, district, area = self._parse_location_value(value)
+            if city and not detail_data.get('city'):
+                detail_data['city'] = city
+            if district and not detail_data.get('district'):
+                detail_data['district'] = district
+            if area and not detail_data.get('area'):
+                detail_data['area'] = area
         else:
             detail_data[key] = value
+
+    def _parse_location_value(self, value: str) -> tuple[str, str, str]:
+        """Normalize location text into city, district, area."""
+        text = re.sub(r'\s+', ' ', (value or '')).strip().strip(':')
+        if not text:
+            return '', '', ''
+
+        if '\u2014' in text:
+            parts = [p.strip() for p in text.split('\u2014') if p.strip()]
+            city = parts[0] if len(parts) > 0 else ''
+            tail = parts[1] if len(parts) > 1 else ''
+            sub_parts = [p.strip() for p in tail.split(' - ') if p.strip()]
+            district = sub_parts[0] if len(sub_parts) > 0 else ''
+            area = sub_parts[-1] if len(sub_parts) > 1 else ''
+            return city, district, area
+
+        comma_parts = [p.strip() for p in text.split(',') if p.strip()]
+        city = comma_parts[0] if len(comma_parts) > 0 else ''
+        district = comma_parts[1] if len(comma_parts) > 1 else ''
+        area = comma_parts[2] if len(comma_parts) > 2 else ''
+        return city, district, area
     
     
     def _extract_id_from_url(self, url: str) -> str:
@@ -1316,12 +1381,193 @@ class BazarakiScraper:
         size_sqm = int(size_match.group(1)) if size_match else None
         
         return bedrooms, bathrooms, size_sqm
+
+    def backfill_missing_locations_in_processed_table(
+        self,
+        db_connection,
+        table_name: str = 'properties_processed',
+        max_rows: Optional[int] = None,
+        batch_commit_size: int = 25,
+        dry_run: bool = False,
+        parallel_workers: int = PAGE_WORKERS_PER_LOCATION,
+    ) -> Dict[str, int]:
+        """
+        Fill missing city/district/area values in a processed table by re-scraping listing URLs.
+
+        Only updates fields that are currently missing and for which detail scraping returns a value.
+        """
+        if not db_connection or not db_connection.is_connected():
+            raise RuntimeError("[BACKFILL] Database is not connected.")
+
+        stats = {
+            'rows_scanned': 0,
+            'rows_updated': 0,
+            'rows_with_no_url': 0,
+            'rows_with_no_detail_data': 0,
+            'rows_with_no_location_found': 0,
+            'rows_failed': 0,
+        }
+
+        def _is_missing(value) -> bool:
+            if value is None:
+                return True
+            normalized = str(value).strip().lower()
+            return normalized in {'', 'unknown', 'n/a', 'na', 'none', 'null', '?', '??'}
+
+        def _normalize_value(value) -> Optional[str]:
+            if value is None:
+                return None
+            normalized = re.sub(r'\s+', ' ', str(value)).strip()
+            if _is_missing(normalized):
+                return None
+            return normalized
+
+        rows = db_connection.fetch_rows_with_missing_locations(
+            table_name=table_name,
+            max_rows=max_rows,
+        )
+
+        print(f"[BACKFILL] Found {len(rows)} row(s) with missing location fields in {table_name}")
+
+        # Keep DB writes in the main thread; only Selenium fetching runs in parallel.
+        rows_to_fetch = []
+        for row in rows:
+            row_id = row.get('id')
+            url = (row.get('url') or '').strip()
+            if not url:
+                stats['rows_scanned'] += 1
+                stats['rows_with_no_url'] += 1
+                continue
+            rows_to_fetch.append(row)
+
+        if not rows_to_fetch:
+            print("[BACKFILL] Nothing to fetch from Selenium (all candidates had no URL).")
+            return stats
+
+        worker_count = max(1, min(parallel_workers, len(rows_to_fetch)))
+        print(f"[BACKFILL] Running with {worker_count} parallel Selenium worker(s)")
+
+        def _fetch_row(row_payload: Dict):
+            row_url = (row_payload.get('url') or '').strip()
+            try:
+                detail = self._fetch_property_details(row_url)
+                return row_payload, detail, None
+            except Exception as inner_error:
+                return row_payload, None, str(inner_error)
+
+        pending_updates = 0
+        processed_fetches = 0
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(_fetch_row, row) for row in rows_to_fetch]
+
+            for future in as_completed(futures):
+                row, detail_data, fetch_error = future.result()
+                processed_fetches += 1
+                stats['rows_scanned'] += 1
+
+                row_id = row.get('id')
+
+                if fetch_error:
+                    stats['rows_failed'] += 1
+                    print(f"[BACKFILL] Failed id={row_id}: {fetch_error}")
+                    continue
+
+                if not detail_data:
+                    stats['rows_with_no_detail_data'] += 1
+                    continue
+
+                scraped_city = _normalize_value(detail_data.get('city'))
+                scraped_district = _normalize_value(detail_data.get('district'))
+                scraped_area = _normalize_value(detail_data.get('area'))
+
+                updates = {}
+                if _is_missing(row.get('city')) and scraped_city:
+                    updates['city'] = scraped_city
+                if _is_missing(row.get('district')) and scraped_district:
+                    updates['district'] = scraped_district
+                if _is_missing(row.get('area')) and scraped_area:
+                    updates['area'] = scraped_area
+
+                if not updates:
+                    stats['rows_with_no_location_found'] += 1
+                    continue
+
+                if not dry_run:
+                    db_connection.update_location_fields_by_id(
+                        row_id=row_id,
+                        city=updates.get('city'),
+                        district=updates.get('district'),
+                        area=updates.get('area'),
+                        table_name=table_name,
+                        commit=(batch_commit_size <= 1),
+                    )
+                    pending_updates += 1
+
+                    # Commit continuously so DB updates are visible while the run is ongoing.
+                    if batch_commit_size > 1 and pending_updates >= batch_commit_size:
+                        db_connection.commit()
+                        pending_updates = 0
+
+                stats['rows_updated'] += 1
+                print(
+                    f"[BACKFILL] Updated id={row_id} "
+                    f"(city={updates.get('city')}, district={updates.get('district')}, area={updates.get('area')})"
+                )
+
+                if processed_fetches % 20 == 0:
+                    print(f"[BACKFILL] Progress: {processed_fetches}/{len(rows_to_fetch)} fetched")
+
+        if not dry_run and batch_commit_size > 1 and pending_updates > 0:
+            db_connection.commit()
+
+        print(
+            "[BACKFILL] Summary: "
+            f"scanned={stats['rows_scanned']}, updated={stats['rows_updated']}, "
+            f"no_url={stats['rows_with_no_url']}, no_detail={stats['rows_with_no_detail_data']}, "
+            f"no_location={stats['rows_with_no_location_found']}, failed={stats['rows_failed']}"
+        )
+        return stats
     
     def save_to_json(self, properties: List[Dict], filename: str):
         """Save scraped properties to JSON file"""
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(properties, f, ensure_ascii=False, indent=2)
         print(f"Saved {len(properties)} properties to {filename}")
+
+
+def fix_missing_processed_locations(
+    max_rows: Optional[int] = None,
+    batch_commit_size: int = 25,
+    dry_run: bool = False,
+    parallel_workers: int = PAGE_WORKERS_PER_LOCATION,
+) -> Dict[str, int]:
+    """
+    Convenience runner for backfilling city/district/area in properties_processed.
+    Uses the cleaning database connection where properties_processed is expected to live.
+    """
+    scraper = BazarakiScraper(
+        enable_checkpoint=False,
+        enable_progress=False,
+        enable_process_cleanup=True,
+        enable_page_parallel=False,
+        page_workers=1,
+        worker_startup_stagger_seconds=0.0,
+    )
+    db = DBConnectionCleaning()
+
+    try:
+        db.connect()
+        return scraper.backfill_missing_locations_in_processed_table(
+            db_connection=db,
+            table_name='properties_processed',
+            max_rows=max_rows,
+            batch_commit_size=batch_commit_size,
+            dry_run=dry_run,
+            parallel_workers=parallel_workers,
+        )
+    finally:
+        db.disconnect()
+        scraper.close_driver()
 
 
 if __name__ == "__main__":

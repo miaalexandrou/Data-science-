@@ -5,12 +5,14 @@ cleans it, and inserts it into the cleaning database.
 """
 
 import sys
+import os
 from typing import List, Dict
 
-# Add parent directory to path for imports
-sys.path.insert(0, "..")
+# Add src directory to path for imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(script_dir)
+sys.path.insert(0, src_dir)
 
-from databaseconection.db_connection import DBConnection
 from databaseconection.db_connectionCleaning import DBConnection as DBConnectionCleaning
 
 
@@ -19,24 +21,18 @@ from databaseconection.db_connectionCleaning import DBConnection as DBConnection
 # ──────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """
-    Main orchestration function:
-    1. Fetch raw data from source database
-    2. Clean the data
-    3. Insert cleaned data into cleaning database
-    """
     print("[PIPELINE] Starting data cleaning pipeline...")
     
     # Fetch data from source
-    print("[PIPELINE] Fetching data from source database...")
+    print("[PIPELINE] Fetching data from database...")
     raw_data = fetch_data_from_source()
     
     # Clean data
     print(f"[PIPELINE] Cleaning {len(raw_data)} records...")
     cleaned_data = clean_data(raw_data)
     
-    # Insert into cleaning database
-    print("[PIPELINE] Inserting cleaned data into cleaning database...")
+    # Insert into database
+    print("[PIPELINE] Inserting cleaned data into database...")
     inserted_count = insert_cleaned_data(cleaned_data)
     
     print(f"[PIPELINE] Pipeline complete. Inserted {inserted_count} records.")
@@ -48,14 +44,23 @@ def main() -> None:
 
 def fetch_data_from_source() -> List[Dict]:
     """
-    Fetch all property records from the source database.
+    Fetch all property records from the source database (properties table).
     
     Returns
     -------
     List[Dict]
         List of property records from the source database.
     """
-    pass
+    try:
+        with DBConnectionCleaning() as db:
+            with db._conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM properties")
+                results = cursor.fetchall()
+        print(f"[FETCH] Retrieved {len(results)} records from properties table")
+        return results
+    except Exception as e:
+        print(f"[FETCH] Error fetching data: {e}")
+        return []
 
 
 def clean_data(raw_data: List[Dict]) -> List[Dict]:

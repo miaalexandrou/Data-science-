@@ -53,7 +53,7 @@ def fetch_data_from_source() -> List[Dict]:
         List of property records from the source database.
     """
     try:
-        requested_count = int(input("How many lines do you want to fetch from properties? "))
+        requested_count = int(input("How many lines do you want to fetch from properties? (enter 1 for all) "))
     except ValueError:
         print("[FETCH] Invalid number entered.")
         return []
@@ -62,10 +62,15 @@ def fetch_data_from_source() -> List[Dict]:
         print("[FETCH] Number of lines must be greater than 0.")
         return []
 
+    fetch_all = requested_count == 1
+
     try:
         with DBConnectionCleaning() as db:
             with db._conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM properties LIMIT %s", (requested_count,))
+                if fetch_all:
+                    cursor.execute("SELECT * FROM properties")
+                else:
+                    cursor.execute("SELECT * FROM properties LIMIT %s", (requested_count,))
                 results = cursor.fetchall()
         print(f"[FETCH] Retrieved {len(results)} records from properties table")
         return results
@@ -84,6 +89,8 @@ def clean_data(raw_data: List[Dict]) -> List[Dict]:
     
     # Handle null values
     cleaned_data = handle_nulls(cleaned_data)
+    # Add data when possible 
+    cleaned_data = apply_targeted_imputations(cleaned_data)
     
     return cleaned_data
 
@@ -97,9 +104,12 @@ def insert_cleaned_data(cleaned_data: List[Dict]) -> int:
             with db._conn.cursor() as cursor:
                 for record in cleaned_data:
                     # Build column names and placeholders dynamically
-                    columns = ", ".join(record.keys())
-                    placeholders = ", ".join(["%s"] * len(record))
-                    values = tuple(record.values())
+                    row = dict(record)
+                    row.pop("id", None)
+
+                    columns = ", ".join(f"`{column}`" for column in row.keys())
+                    placeholders = ", ".join(["%s"] * len(row))
+                    values = tuple(row.values())
                     
                     sql = f"INSERT INTO properties_processed ({columns}) VALUES ({placeholders})"
                     cursor.execute(sql, values)
@@ -130,16 +140,18 @@ def deduplicate(raw_data: List[Dict]) -> List[Dict]:
     List[Dict]
         Deduplicated property records.
     """
-    seen = set()
+    seen_urls = set()
     deduplicated = []
     duplicates_removed = 0
     
     for row in raw_data:
-        # Convert dict to a hashable tuple of sorted items
-        row_tuple = tuple(sorted(row.items()))
-        
-        if row_tuple not in seen:
-            seen.add(row_tuple)
+        url = row.get("url")
+
+        # Fall back to external_id only if a URL is missing
+        dedupe_key = url or row.get("external_id")
+
+        if dedupe_key not in seen_urls:
+            seen_urls.add(dedupe_key)
             deduplicated.append(row)
         else:
             duplicates_removed += 1
@@ -162,9 +174,8 @@ def handle_nulls(data: List[Dict]) -> List[Dict]:
     List[Dict]
         Cleaned property records with nulls handled.
     """
-    step1_data = convert_pseudo_nulls_to_null(data)
-    step2_data = apply_targeted_imputations(step1_data)
-    return step2_data
+    data = convert_pseudo_nulls_to_null(data)
+    return data
 
 
 def convert_pseudo_nulls_to_null(data: List[Dict]) -> List[Dict]:
@@ -206,16 +217,17 @@ def convert_pseudo_nulls_to_null(data: List[Dict]) -> List[Dict]:
 
 def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
     """ Apply safe imputations: price_per_sqm and optional grouped bathrooms."""
+
     updated_rows: List[Dict] = [dict(row) for row in data]
 
-    # 4a) Recompute price_per_sqm only when enough information exists.
+    # Recompute price_per_sqm only when enough information exists.
     for row in updated_rows:
         price = row.get("price")
         property_area = row.get("property_area_sqm")
         if row.get("price_per_sqm") is None and price is not None and property_area not in (None, 0):
             row["price_per_sqm"] = round(float(price) / float(property_area), 3)
 
-    # 4b) Optional bathrooms imputation by (property_type, bedrooms) group medians.
+    # Optional bathrooms imputation by (property_type, bedrooms) group medians.
     grouped_bathrooms: Dict = {}
     for row in updated_rows:
         bathrooms = row.get("bathrooms")
@@ -226,13 +238,16 @@ def apply_targeted_imputations(data: List[Dict]) -> List[Dict]:
 
     group_medians = {key: median(values) for key, values in grouped_bathrooms.items() if values}
 
+    bathrooms_imputed = 0
     for row in updated_rows:
         if row.get("bathrooms") is not None:
             continue
         group_key = (row.get("property_type"), row.get("bedrooms"))
         if group_key in group_medians:
             row["bathrooms"] = int(round(group_medians[group_key]))
+            bathrooms_imputed += 1
 
+    print(f"[IMPUTE] Bathrooms imputed: {bathrooms_imputed}")
     return updated_rows
 
 

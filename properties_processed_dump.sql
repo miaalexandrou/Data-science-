@@ -1,4 +1,4 @@
-/*M!999999\- enable the sandbox mode */ 
+ 
 -- MariaDB dump 10.19-12.0.2-MariaDB, for osx10.21 (arm64)
 --
 -- Host: 127.0.0.1    Database: DataScience

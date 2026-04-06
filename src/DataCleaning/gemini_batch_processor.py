@@ -52,7 +52,10 @@ def process_batches():
                 )
             )
             
-            extracted_json = json.loads(response.text)
+            # Clean the text in case Gemini wraps it in markdown code blocks
+            raw_text = response.text.replace('```json', '').replace('```', '').strip()
+            
+            extracted_json = json.loads(raw_text)
             
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(extracted_json, f, indent=2, ensure_ascii=False)

@@ -2,10 +2,17 @@ import os
 import json
 import time
 
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-API_KEY = "AIzaSyBgweJ1sYv42HhuvOVcglJnETo2R1oduCw"  
+# Load API key from .env file
+load_dotenv()
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env file")
+
 client = genai.Client(api_key=API_KEY)
 
 INPUT_DIR = "data/llm_batches"
@@ -54,11 +61,13 @@ def process_batches():
             
         except Exception as e:
             print(f"❌ Error processing {filename}: {e}")
-            if 'response' in locals():
+            if 'response' in locals() and hasattr(response, 'text'):
                 print(f"Response was: {response.text}")
-            break
+            print("Retrying in 15 seconds...")
+            time.sleep(15) # Wait out the rate limit and retry instead of breaking
+            continue # Try this batch again
             
-        time.sleep(5)
+        time.sleep(7) # Increased sleep to prevent rate limiting
 
 if __name__ == "__main__":
     process_batches()

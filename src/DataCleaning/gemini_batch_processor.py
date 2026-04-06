@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 from google import genai
@@ -19,28 +20,19 @@ INPUT_DIR = "data/llm_batches"
 OUTPUT_DIR = "data/llm_extracted"
 PROMPT_FILE = "prompts-for-feature-extraction.txt"
 
-def process_batches():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def process_single_batch(filename, system_instruction):
+    input_path = os.path.join(INPUT_DIR, filename)
+    output_path = os.path.join(OUTPUT_DIR, filename.replace('.json', '_extracted.json'))
     
-    with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
-        system_instruction = f.read()
+    # Skip if already processed!
+    if os.path.exists(output_path):
+        return f"⏩ Skipped {filename} (Already processed)"
 
-    batch_files = sorted([f for f in os.listdir(INPUT_DIR) if f.startswith("batch_") and f.endswith(".json")])
-    print(f"Found {len(batch_files)} batches to process.")
+    with open(input_path, 'r', encoding='utf-8') as f:
+        batch_data = f.read()
 
-    for filename in batch_files:
-        input_path = os.path.join(INPUT_DIR, filename)
-        output_path = os.path.join(OUTPUT_DIR, filename.replace('.json', '_extracted.json'))
-        
-        if os.path.exists(output_path):
-            print(f"Skipping {filename} - already processed.")
-            continue
-
-        print(f"Sending {filename} to Gemini...")
-        
-        with open(input_path, 'r', encoding='utf-8') as f:
-            batch_data = f.read()
-            
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -52,25 +44,43 @@ def process_batches():
                 )
             )
             
-            # Clean the text in case Gemini wraps it in markdown code blocks
             raw_text = response.text.replace('```json', '').replace('```', '').strip()
-            
             extracted_json = json.loads(raw_text)
             
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(extracted_json, f, indent=2, ensure_ascii=False)
                 
-            print(f"✅ Successfully saved: {output_path}")
+            return f"✅ Successfully saved: {output_path}"
             
         except Exception as e:
-            print(f"❌ Error processing {filename}: {e}")
-            if 'response' in locals() and hasattr(response, 'text'):
-                print(f"Response was: {response.text}")
-            print("Retrying in 15 seconds...")
-            time.sleep(15) # Wait out the rate limit and retry instead of breaking
-            continue # Try this batch again
+            if attempt == max_retries - 1:
+                return f"❌ Error processing {filename} entirely: {e}"
+            time.sleep(2) # Brief pause before retry
             
-        time.sleep(7) # Increased sleep to prevent rate limiting
+    return f"❌ Failed {filename}"
+
+def process_batches_parallel():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
+        system_instruction = f.read()
+
+    batch_files = sorted([f for f in os.listdir(INPUT_DIR) if f.startswith("batch_") and f.endswith(".json")])
+    print(f"Found {len(batch_files)} batches to process.")
+    print("🚀 Firing up parallel processing...")
+
+    # Process 20 files at the exact same time
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        # Submit all tasks to the executor
+        futures = {executor.submit(process_single_batch, filename, system_instruction): filename for filename in batch_files}
+        
+        # As each thread finishes, print its result
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                print(result)
+            except Exception as exc:
+                print(f"Batch generated an exception: {exc}")
 
 if __name__ == "__main__":
-    process_batches()
+    process_batches_parallel()

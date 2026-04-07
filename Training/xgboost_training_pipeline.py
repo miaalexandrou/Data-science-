@@ -12,8 +12,9 @@ from typing import Any
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
+import optuna
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
 
@@ -72,12 +73,45 @@ def train_and_save_model(data_path: Path, model_path: Path) -> dict[str, Any]:
         random_state=42,
     )
 
-    model = build_training_pipeline(X_train)
-    model.fit(X_train, y_train)
-    evaluate_regression_model(model, X_test, y_test)
+    base_model = build_training_pipeline(X_train)
+
+    def objective(trial):
+        params = {
+            "xgb__n_estimators": trial.suggest_int("xgb__n_estimators", 400, 2000, step=100),
+            "xgb__learning_rate": trial.suggest_float("xgb__learning_rate", 0.005, 0.05, log=True),
+            "xgb__max_depth": trial.suggest_int("xgb__max_depth", 6, 12),
+            "xgb__subsample": trial.suggest_float("xgb__subsample", 0.5, 1.0),
+            "xgb__colsample_bytree": trial.suggest_float("xgb__colsample_bytree", 0.5, 1.0),
+            "xgb__gamma": trial.suggest_float("xgb__gamma", 1e-8, 1.0, log=True),
+            "xgb__min_child_weight": trial.suggest_int("xgb__min_child_weight", 1, 10),
+            "xgb__reg_alpha": trial.suggest_float("xgb__reg_alpha", 1e-8, 10.0, log=True),
+            "xgb__reg_lambda": trial.suggest_float("xgb__reg_lambda", 1e-8, 10.0, log=True),
+        }
+        base_model.set_params(**params)
+        
+        # Calculate Mean Absolute Error via Fast 3-Fold Cross-Validation
+        scores = cross_val_score(
+            base_model, X_train, y_train, 
+            scoring="neg_mean_absolute_error", 
+            cv=3, 
+            n_jobs=-1
+        )
+        return -scores.mean()
+
+    print("\nStarting Hyperparameter Tuning with Optuna...")
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=150)
+    
+    print(f"\nBest parameters found by Optuna: {study.best_params}")
+
+    best_model = base_model.set_params(**study.best_params)
+    print("Training final model on full training set with best parameters...")
+    best_model.fit(X_train, y_train)
+
+    evaluate_regression_model(best_model, X_test, y_test, X)
 
     bundle = {
-        "model": model,
+        "model": best_model,
         "feature_columns": X.columns.tolist(),
     }
     save_model_bundle(bundle, model_path)
@@ -177,13 +211,65 @@ def evaluate_regression_model(
     model: Pipeline,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    X_full: pd.DataFrame = None,
 ) -> None:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
     predictions = model.predict(X_test)
     mae = mean_absolute_error(y_test, predictions)
     r2 = r2_score(y_test, predictions)
     print("\n=== Model Metrics ===")
     print(f"MAE: {mae:.2f}")
     print(f"R2:  {r2:.4f}")
+
+    # Plot 1: Actual vs Predicted
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(x=y_test, y=predictions, alpha=0.6)
+    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
+    plt.title("Actual vs Predicted Price")
+    plt.xlabel("Actual Price")
+    plt.ylabel("Predicted Price")
+    plt.tight_layout()
+    plt.savefig("actual_vs_predicted.png")
+    plt.close()
+    print("\nSaved 'actual_vs_predicted.png'")
+
+    # Plot 2: Residuals
+    residuals = y_test - predictions
+    plt.figure(figsize=(10, 6))
+    sns.histplot(residuals, kde=True)
+    plt.title("Residuals Distribution")
+    plt.xlabel("Residual (Actual - Predicted)")
+    plt.tight_layout()
+    plt.savefig("residuals.png")
+    plt.close()
+    print("Saved 'residuals.png'")
+
+    # Plot 3: Feature Importances
+    xgb_step = model.named_steps.get("xgb")
+    prep_step = model.named_steps.get("prep")
+    
+    if xgb_step and hasattr(xgb_step, "feature_importances_"):
+        importances = xgb_step.feature_importances_
+        if hasattr(prep_step, "get_feature_names_out"):
+            feature_names = prep_step.get_feature_names_out()
+        elif X_full is not None:
+            feature_names = X_full.columns
+        else:
+            feature_names = [f"Feature {i}" for i in range(len(importances))]
+            
+        # Ensure length matches
+        if len(feature_names) == len(importances):
+            feat_imp = pd.Series(importances, index=feature_names).sort_values(ascending=False)
+            plt.figure(figsize=(12, 8))
+            sns.barplot(x=feat_imp.head(20).values, y=feat_imp.head(20).index)
+            plt.title("Top 20 Feature Importances")
+            plt.xlabel("Relative Importance")
+            plt.tight_layout()
+            plt.savefig("feature_importances.png")
+            plt.close()
+            print("Saved 'feature_importances.png'")
 
 
 if __name__ == "__main__":

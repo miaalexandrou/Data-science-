@@ -1,7 +1,4 @@
 """XGBoost property deal scorer skeleton.
-
-Main workflow is defined at the top.
-Helper functions are implemented below.
 """
 
 from __future__ import annotations

@@ -1,4 +1,10 @@
-"""XGBoost property deal scorer skeleton.
+"""Train an XGBoost regressor for property prices and save it as a pickle bundle.
+
+This script:
+- loads the JSON training data
+- tunes the XGBoost params with Optuna
+- saves the trained pipeline + expected feature columns
+- exports a few simple evaluation plots
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ DEFAULT_MODEL_PATH = Path(__file__).with_name("xgboost_deal_model.pkl")
 
 
 def main() -> None:
-    """Top-level entrypoint for training and saving the model."""
+    """Train the model and write the saved bundle to disk."""
     args = parse_args()
     train_and_save_model(
         data_path=args.data_path,
@@ -33,7 +39,7 @@ def main() -> None:
 
 
 # -----------------------------
-# Helper functions (below)
+# Helpers
 # -----------------------------
 
 
@@ -88,8 +94,8 @@ def train_and_save_model(data_path: Path, model_path: Path) -> dict[str, Any]:
             "xgb__reg_lambda": trial.suggest_float("xgb__reg_lambda", 1e-8, 10.0, log=True),
         }
         base_model.set_params(**params)
-        
-        # Calculate Mean Absolute Error via Fast 3-Fold Cross-Validation
+
+        # 3-fold CV: use MAE (lower is better)
         scores = cross_val_score(
             base_model, X_train, y_train, 
             scoring="neg_mean_absolute_error", 
@@ -148,7 +154,7 @@ def prepare_training_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = df.copy()
     cleaned = cleaned.drop(columns=["property_id"], errors="ignore")
 
-    # Normalize typo variant and ensure only photovoltaic_panels is used as a feature.
+    # Handle a typo variant so we only keep one solar-panels column.
     if "photovolta_panels" in cleaned.columns:
         if "photovoltaic_panels" not in cleaned.columns:
             cleaned["photovoltaic_panels"] = 0
@@ -165,7 +171,7 @@ def prepare_training_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 def split_features_target(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     target_col = "price"
-    # Use every available column as a feature except the target.
+    # Everything except the target is a feature.
     X = df.drop(columns=[target_col], errors="ignore")
     y = df[target_col]
     return X, y
@@ -223,7 +229,7 @@ def evaluate_regression_model(
     print(f"MAE: {mae:.2f}")
     print(f"R2:  {r2:.4f}")
 
-    # Plot 1: Actual vs Predicted
+    # Plot: actual vs predicted
     plt.figure(figsize=(10, 6))
     sns.scatterplot(x=y_test, y=predictions, alpha=0.6)
     plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
@@ -235,7 +241,7 @@ def evaluate_regression_model(
     plt.close()
     print("\nSaved 'actual_vs_predicted.png'")
 
-    # Plot 2: Residuals
+    # Plot: residuals
     residuals = y_test - predictions
     plt.figure(figsize=(10, 6))
     sns.histplot(residuals, kde=True)
@@ -246,7 +252,7 @@ def evaluate_regression_model(
     plt.close()
     print("Saved 'residuals.png'")
 
-    # Plot 3: Feature Importances
+    # Plot: feature importances (top 20)
     xgb_step = model.named_steps.get("xgb")
     prep_step = model.named_steps.get("prep")
     
@@ -259,7 +265,7 @@ def evaluate_regression_model(
         else:
             feature_names = [f"Feature {i}" for i in range(len(importances))]
             
-        # Ensure length matches
+        # Make sure names and importances line up
         if len(feature_names) == len(importances):
             feat_imp = pd.Series(importances, index=feature_names).sort_values(ascending=False)
             plt.figure(figsize=(12, 8))

@@ -5,10 +5,10 @@ import pickle
 from pathlib import Path
 
 app = Flask(__name__)
-# Enable CORS so WordPress can communicate with this API on localhost
+# allow requests from the WP site (local dev)
 CORS(app)
 
-# Point to the trained model from the Training folder
+# path to the saved model bundle
 MODEL_PATH = Path(__file__).parent.parent / "Training" / "xgboost_deal_model.pkl"
 
 print("Loading model into memory...")
@@ -29,24 +29,24 @@ def predict():
         return jsonify({"success": False, "error": "Model not loaded"}), 500
         
     try:
-        # Get the JSON property data from WordPress
+        # get the property data from the website
         data = request.json
         
-        # Convert to Pandas DataFrame
+        # make it a 1-row dataframe
         df = pd.DataFrame([data])
         
-        # Ensure all required features are present, fill with 0 if missing
+        # fill missing features with 0 (so the pipeline still works)
         for col in feature_columns:
             if col not in df.columns:
                 df[col] = 0
                 
-        # Reorder columns to exactly match what the model expects
+        # keep the same column order the model was trained with
         df = df[feature_columns]
 
-        # Make the prediction
+        # predict
         pred = model.predict(df)[0]
         
-        # Return the float price
+        # send back the number
         return jsonify({
             "success": True, 
             "predicted_price": float(pred)
@@ -56,5 +56,5 @@ def predict():
         return jsonify({"success": False, "error": str(e)}), 400
 
 if __name__ == '__main__':
-    # Run the server on port 5000
+    # start the server
     app.run(port=5000, debug=True)

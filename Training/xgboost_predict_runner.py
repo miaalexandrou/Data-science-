@@ -1,8 +1,7 @@
-"""Simple runner script to score one property with the saved XGBoost model.
+"""Small CLI script that loads the saved model and scores one property.
 
-Skeleton style:
-- main workflow at the top
-- helper functions at the bottom
+It reads a single JSON object (one property), runs the model, and prints a quick
+summary.
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ def main() -> None:
 
 
 # -----------------------------
-# Helper functions (below)
+# Helpers
 # -----------------------------
 
 

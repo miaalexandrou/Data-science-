@@ -1,13 +1,6 @@
 """
 Remove unwanted fields from a JSON file.
 
-Usage examples:
-python src/DataCleaning/remove_json_fields.py \
-  --file data/xgboost_training_data_final.json
-
-python src/DataCleaning/remove_json_fields.py \
-  --file data/xgboost_training_data_final.json \
-  --output data/xgboost_training_data_final.cleaned.json
 """
 
 import argparse

@@ -82,10 +82,10 @@ def prepare_for_xgboost():
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(final_dataset, f, indent=2, ensure_ascii=False)
             
-        print(f"✅ Success! {len(final_dataset)} completely merged records are ready for XGBoost training at: {OUTPUT_FILE}")
+        print(f"Success! {len(final_dataset)} completely merged records are ready for XGBoost training at: {OUTPUT_FILE}")
 
     except Exception as e:
-        print(f"❌ Error during merge: {e}")
+        print(f"Error during merge: {e}")
     finally:
         connection.close()
 

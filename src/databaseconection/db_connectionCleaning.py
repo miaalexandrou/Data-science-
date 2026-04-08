@@ -115,7 +115,6 @@ class DBConnection:
         self._conn.rollback()
 
     def _validate_table_name(self, table_name: str) -> str:
-        """Allow only simple safe table names to avoid SQL injection."""
         if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', table_name or ''):
             raise ValueError(f"Invalid table name: {table_name}")
         return table_name

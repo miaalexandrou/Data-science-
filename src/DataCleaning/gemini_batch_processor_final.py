@@ -48,14 +48,14 @@ def process_single_batch(filename, system_instruction):
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(extracted_json, f, indent=2, ensure_ascii=False)
                 
-            return f"✅ Successfully saved: {output_path}"
+            return f"Successfully saved: {output_path}"
             
         except Exception as e:
             if attempt == max_retries - 1:
-                return f"❌ Error processing {filename} entirely: {e}"
+                return f"Error processing {filename} entirely: {e}"
             time.sleep(2)
             
-    return f"❌ Failed {filename}"
+    return f"Failed {filename}"
 
 def process_batches_parallel():
     os.makedirs(OUTPUT_DIR, exist_ok=True)

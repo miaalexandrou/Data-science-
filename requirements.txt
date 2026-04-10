@@ -10,13 +10,13 @@ sqlalchemy==2.0.27
 pymysql==1.1.0
 
 # Data Processing
-pandas==2.2.1
+pandas==2.2.3
 numpy==1.26.4
 python-dateutil==2.9.0
 
 # Machine Learning
-scikit-learn==1.4.1.post1
-xgboost==2.0.3
+scikit-learn==1.8.0
+xgboost==3.2.0
 
 # Visualization
 plotly==5.19.0
@@ -26,6 +26,10 @@ folium==0.15.1
 
 # Web Dashboard
 streamlit==1.31.1
+
+# API
+flask==3.0.2
+flask-cors==4.0.0
 
 # NLP (for text analysis)
 nltk==3.8.1

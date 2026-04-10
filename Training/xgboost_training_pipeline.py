@@ -153,6 +153,7 @@ def prepare_training_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     cleaned = df.copy()
     cleaned = cleaned.drop(columns=["property_id"], errors="ignore")
+    cleaned = cleaned.drop(columns=["price_per_sqm"], errors="ignore")
 
     # Handle a typo variant so we only keep one solar-panels column.
     if "photovolta_panels" in cleaned.columns:

@@ -3,6 +3,7 @@ from flask_cors import CORS
 import pandas as pd
 import pickle
 from pathlib import Path
+import os
 
 app = Flask(__name__)
 # allow requests from the WP site (local dev)
@@ -57,4 +58,5 @@ def predict():
 
 if __name__ == '__main__':
     # start the server
-    app.run(port=5000, debug=True)
+    port = int(os.getenv("PORT", "8000"))
+    app.run(port=port, debug=True)
